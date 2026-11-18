@@ -34,6 +34,6 @@ export function homeScreen() {
   );
   if (rem.length) body.append(sectionTitle('مطلوب منك', h('button', { class: 'link', text: 'الكل', onclick: () => ctx.nav('#/reminders') })), list(rem.slice(0, 5).map(reminderRow)));
   const rows = UI_MODULES.flatMap((m) => (m.homeRows ? m.homeRows(ctx.state) : []));
-  body.append(sectionTitle('الشغال الآن', h('button', { class: 'link', text: 'كل القطاعات', onclick: () => ctx.nav('#/sectors') })), rows.length ? list(rows) : h('div', { class: 'card' }, h('p', { text: 'ابدأ من «القطاعات» ← الدواجن ← دورة جديدة.' })));
+  body.append(sectionTitle('الشغال الآن', h('button', { class: 'link', text: 'كل القطاعات', onclick: () => ctx.nav('#/sectors') })), rows.length ? list(rows) : h('div', { class: 'card' }, h('p', { text: 'ابدأ من «القطاعات» ← الدواجن (دورة جديدة) أو العربية (عربية جديدة).' })));
   return { title: APP_NAME, subtitle: F.date(ctx.today()), root: true, body };
 }

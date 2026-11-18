@@ -16,7 +16,7 @@ export const collator = new Intl.Collator('ar', { numeric: true });
 export function entryRow(e, { showMonth = true } = {}) {
   const d = describeEntry(ctx.state, e);
   const amount = d.amount ? (d.sign > 0 ? F.money(d.amount, { sign: true }) : d.sign < 0 ? F.money(-d.amount) : F.money(d.amount)) : '';
-  const sub = [F.date(e.date), showMonth && e.month && e.month !== e.date.slice(0, 7) ? `على حساب ${F.month(e.month)}` : '', e.note].filter(Boolean).join(' · ');
+  const sub = [e.dateUnknown ? 'تاريخ غير معروف' : F.date(e.date), showMonth && e.month && e.month !== e.date.slice(0, 7) ? `على حساب ${F.month(e.month)}` : '', e.note].filter(Boolean).join(' · ');
   return row({
     title: d.title,
     subtitle: sub,

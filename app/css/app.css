@@ -1271,3 +1271,32 @@ h3.section-title {
   font-weight: 700;
   margin: 6px 0;
 }
+
+/* ---------- العربية ---------- */
+.pick-list label.row {
+  cursor: pointer;
+}
+.pick-list .row .title,
+.row .title.wrap,
+.row .subtitle.wrap,
+.visit-item .title,
+.visit-item .subtitle {
+  white-space: normal;
+}
+details.more-tasks {
+  margin-bottom: 12px;
+}
+details.more-tasks summary {
+  font-weight: 700;
+  min-height: 40px;
+  padding: 8px 2px;
+  cursor: pointer;
+  color: var(--primary);
+}
+.grid3 input {
+  min-width: 0;
+}
+.row.wrap .title,
+.row.wrap .subtitle {
+  white-space: normal;
+}

@@ -5,6 +5,7 @@ import { ctx } from './ctx.js';
 export const PRIVACY_GROUPS = Object.freeze({
   home: 'أرقام الرئيسية',
   poultry: 'الدواجن',
+  car: 'العربية',
   people: 'الأشخاص والأرصدة',
   finance: 'وضعي المالي',
   entries: 'الحركات',

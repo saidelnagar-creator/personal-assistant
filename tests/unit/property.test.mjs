@@ -81,3 +81,71 @@ test('ثوابت: مجموع التوزيع = صافي كل شهر، والنق�
     assert.deepEqual(d2.totals, d.totals);
   }
 });
+
+// العربية: لأي سلسلة قراءات وشغل وإلغاءات صالحة — إجمالي كل شغل = بنوده، والتكاليف = مجموع الشغل الساري،
+// والعداد لا يرجع للخلف، والموعد الجاي = آخر مرة + المدة، وإعادة البناء متطابقة.
+import { carCosts, carData } from '../../app/src/core/modules/car/calc.js';
+import { SCHEDULE } from '../../app/src/core/modules/car/schedule.js';
+import { addDays } from '../../app/src/core/util.js';
+
+function randomCarBook(seed) {
+  const r = rng(seed);
+  const pick = (a) => a[Math.floor(r() * a.length)];
+  const o = { now: '2026-11-18T00:00:00.000Z' };
+  const b = Book.seeded();
+  b.upsert('person', { id: 'm1', name: 'm1' }, o);
+  b.dispatchAll(
+    [
+      ['entity.upsert', { kind: 'car.vehicle', item: { id: 'car', name: 'car', gearbox: pick(['manual', 'auto']), fuel: pick(['petrol', 'petrol-cng']) } }],
+      ['entry.add', { entry: { id: 'od0', kind: 'car.odometer', carId: 'car', date: '2025-01-01', km: 300000 } }],
+    ],
+    o,
+  );
+  const keys = SCHEDULE.map((t) => t.key);
+  let date = '2025-01-01';
+  let km = 300000;
+  const works = [];
+  for (let i = 0; i < 40; i++) {
+    date = addDays(date, 1 + Math.floor(r() * 20));
+    km += Math.floor(r() * 1500);
+    const k = r();
+    if (k < 0.4) b.addEntry({ kind: 'car.odometer', carId: 'car', date, km }, o);
+    else if (k < 0.9) {
+      const parts = Array.from({ length: Math.floor(r() * 4) }, (_, j) => {
+        const qty = (1 + Math.floor(r() * 4)) * 500;
+        const price = Math.floor(r() * 100000);
+        return { name: `p${j}`, qty, price, amount: Math.round((qty * price) / 1000) };
+      });
+      const labor = r() < 0.6 ? Math.floor(r() * 50000) : 0;
+      const other = r() < 0.2 ? Math.floor(r() * 20000) : 0;
+      const tasks = [...new Set(Array.from({ length: 1 + Math.floor(r() * 3) }, () => pick(keys)))];
+      const e = b.addEntry({ kind: 'car.work', carId: 'car', type: pick(['service', 'repair', 'upgrade']), date, km, tasks, parts: parts.length ? parts : undefined, labor: labor || undefined, other: other || undefined, mechanicId: r() < 0.5 ? 'm1' : undefined, amount: parts.reduce((s, p) => s + p.amount, 0) + labor + other }, o);
+      works.push(e.id);
+    } else if (works.length) {
+      const id = works.splice(Math.floor(r() * works.length), 1)[0];
+      b.voidEntry(id, 'random', date, o);
+    }
+  }
+  return { b, today: addDays(date, Math.floor(r() * 200)) };
+}
+
+test('ثوابت العربية: الإجمالي = البنود، التكاليف = مجموع الشغل، العداد لا يرجع، وإعادة البناء متطابقة', () => {
+  for (let seed = 1; seed <= 40; seed++) {
+    const { b, today } = randomCarBook(seed);
+    const d = carData(b.state, 'car', today);
+    const c = carCosts(b.state, 'car', today);
+    let total = 0;
+    for (const w of d.works) {
+      assert.equal(w.amount, (w.parts || []).reduce((s, p) => s + p.amount, 0) + (w.labor || 0) + (w.other || 0), `seed ${seed}`);
+      total += w.amount;
+    }
+    assert.equal(c.totals.total, total, `seed ${seed}`);
+    assert.equal(c.byYear.reduce((s, [, y]) => s + y.total, 0), total, `seed ${seed}`);
+    assert.equal(c.split.parts + c.split.labor + c.split.other, total, `seed ${seed}`);
+    for (let i = 1; i < d.readings.length; i++) assert.ok(d.readings[i].km >= d.readings[i - 1].km, `seed ${seed}: العداد رجع`);
+    for (const t of d.tasks) if (t.last && t.km > 0 && t.status !== 'off') assert.equal(t.dueKm, t.last.km + t.km, `seed ${seed} ${t.id}`);
+    const s2 = buildState(b.events);
+    assert.deepEqual(JSON.parse(JSON.stringify(carData(s2, 'car', today).tasks)), JSON.parse(JSON.stringify(d.tasks)), `seed ${seed}`);
+    assert.deepEqual(carCosts(s2, 'car', today).totals, c.totals, `seed ${seed}`);
+  }
+});
