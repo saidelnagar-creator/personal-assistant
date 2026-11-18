@@ -10,6 +10,8 @@
 //   عمود A من «مصروفات التربية»: دفعات تنتهي كل منها بخلية SUM، وتاريخ الدفعة (إن وُجد) في عمود D بنفس الصف،
 //   ونصيبنا من كل دفعة من عمود B (القسمة على الضيف بمعادلة مثل /2)
 //   كل شهر كتلة من 4 أعمدة: صف 1 «شهر N» + السنة، جدول البيع (العدد، السعر، الإجمالي) من صف 4، وجدول المصروف من صف 18.
+//   الكتلة الأولى («البداية») = فترة البشاير حتى انتظام الإنتاج؛ مصروفاتها داخلة أيضاً في دفعات التربية (الشيت يطرحها
+//   من رأس المال)، فتُستبعد من آخر دفعات التربية حتى لا تُحسب مرتين.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -176,9 +178,12 @@ export function buildImport(extracted, config = {}) {
   const names = { manager: config.managerName || 'المدير', sub: config.subName || 'الأسر', guest: config.guestName || 'صاحب الطيور الضيف' };
   b.upsert('person', { id: 'p_manager', name: names.manager }, opts);
   b.upsert('person', { id: 'p_sub', name: names.sub, note: 'شريك تابع لي في دورة الدواجن' }, opts);
-  const settleFrom = p.blocks[0]?.month || null;
+  const layBlock = p.blocks[0] || null;
+  const layMonth = layBlock?.month || null;
+  const settleFrom = p.blocks[1]?.month || null;
   const cycleId = 'cy_import1';
-  b.upsert('poultry.cycle', { id: cycleId, name: config.cycleName || p.name, startDate: p.startDate, birds: p.birds || 0, ageDays: config.ageDays ?? 0, breed: config.breed || 'أبيض', settleFrom, managerId: 'p_manager', status: 'active', note: `مستورد من الإكسيل (شيت ${p.name})` }, opts);
+  b.upsert('poultry.cycle', { id: cycleId, name: config.cycleName || p.name, startDate: p.startDate, birds: p.birds || 0, ageDays: config.ageDays ?? 0, breed: config.breed || 'أبيض', layStart: layMonth ? `${layMonth}-01` : null, settleFrom, managerId: 'p_manager', status: 'active', note: `مستورد من الإكسيل (شيت ${p.name})` }, opts);
+  if (layMonth) report.push(`فترة البشاير: ${layMonth}${settleFrom ? ` · أول شهر منتظم: ${settleFrom}` : ''}`);
   // الحصص: نسبتي، التابع لي، والباقي للمدير (نسبة الناحية من معادلة الشهر)
   const toFrac = (x) => {
     for (const d of [2, 3, 4, 5, 6, 8, 10, 12, 20, 100]) {
@@ -222,15 +227,32 @@ export function buildImport(extracted, config = {}) {
   });
   if (guestOpen) report.push('⚠️ الضيف لم يُسجَّل خروجه في الشيت');
 
-  const preMonth = settleFrom ? addMonths(settleFrom, -1) : null;
+  const firstOp = layMonth || settleFrom;
+  const preMonth = firstOp ? addMonths(firstOp, -1) : null;
+  // رأس المال (نصيبنا) = مجموع دفعات التربية − مصروفات فترة البشاير المسجلة تفصيلاً (كما يفعل الشيت).
+  const layExp = m(layBlock ? layBlock.expenses.reduce((a, x) => a + x.amount, 0) : 0);
+  const oursTotal = p.batches.reduce((a, bt, i) => a + bt.items.reduce((x, amt) => x + m(amt) * p.ours[i], 0), 0);
+  const budget = Math.round(oursTotal - layExp);
+  let cum = 0;
+  let cut = 0;
   const rearing = [];
   p.batches.forEach((bt, i) => {
     const date = batchDates[i];
-    const month = settleFrom && ymOf(date) >= settleFrom ? preMonth : ymOf(date);
-    bt.items.forEach((amt, j) => rearing.push({ id: `imp_rear_${i}_${j}`, kind: 'poultry.expense', cycleId, date, month, category: 'unclassified', amount: m(amt), note: `تربية — دفعة ${i + 1} من الإكسيل${bt.date ? '' : ' (تاريخ تقريبي)'}` }));
+    const month = firstOp && ymOf(date) >= firstOp ? preMonth : ymOf(date);
+    const ratio = p.ours[i];
+    bt.items.forEach((amt, j) => {
+      const gross = m(amt);
+      const ours = gross * ratio;
+      let take = gross;
+      if (cum + ours > budget + 0.5) take = Math.max(0, Math.round((budget - cum) / ratio));
+      cut += gross - take;
+      cum += take * ratio;
+      if (take > 0) rearing.push({ id: `imp_rear_${i}_${j}`, kind: 'poultry.expense', cycleId, date, month, category: 'unclassified', amount: take, note: `تربية — دفعة ${i + 1} من الإكسيل${bt.date ? '' : ' (تاريخ تقريبي)'}${take < gross ? ` (جزء؛ الباقي ضمن فترة البشاير)` : ''}` });
+    });
   });
   b.addEntries(rearing, opts);
   report.push(`مصروفات التأسيس والتربية: ${p.batches.length} دفعات، ${rearing.length} سطراً`);
+  if (cut) report.push(`استُبعد من آخر دفعات التربية ${cut / MONEY} لأنه مسجل تفصيلاً في فترة البشاير`);
 
   // دفع الضيف لنصيبه (المستخدم: «يشيل فراخه ويكون دافع نصيبه»)
   if (b.state.entities.get('person').has('p_guest')) {
@@ -246,6 +268,12 @@ export function buildImport(extracted, config = {}) {
   // دفعاتي للمدير (بلا تواريخ في الشيت)
   b.addEntries(p.payments.map((amt, i) => ({ id: `imp_pay_${i}`, kind: 'poultry.payment', cycleId, date: p.startDate, from: 'me', to: 'cycle', amount: m(amt), note: `دفعة ${i + 1} من الإكسيل (بدون تاريخ)` })), opts);
   report.push(`دفعاتي للمدير: ${p.payments.length} دفعة بمجموع ${p.payments.reduce((s, x) => s + x, 0)}`);
+
+  // دفعة الشريك التابع (الأسر) لي — من الإعداد المحلي
+  if (config.subPaid) {
+    b.addEntry({ id: 'imp_sub_paid', kind: 'poultry.payment', cycleId, date: p.startDate, from: 'p_sub', to: 'me', amount: m(config.subPaid), note: 'دفعة الشريك التابع لنصيبه (التاريخ غير محدد في الشيت)' }, opts);
+    report.push(`دفعة ${names.sub} لي: ${config.subPaid}`);
+  }
 
   // الشهور
   const normalPrices = p.blocks.flatMap((x) => x.sales.filter((s) => s.count >= 30 && s.price >= 60 && s.price <= 400).map((s) => s.price));
@@ -263,12 +291,20 @@ export function buildImport(extracted, config = {}) {
     b.addEntries(es, opts);
   }
   report.push(`الشهور المستوردة: ${p.blocks.map((x) => x.month).join('، ')}`);
-  return { book: b, parsed: p, report, cycleId };
+  // شهور الشيت تحاسبتم عليها بالفعل: تُقفل (يمكن فتحها بسبب من التطبيق).
+  if (config.closeImported !== false) {
+    const scope = `poultry:${cycleId}`;
+    const ms = new Set();
+    for (const r of computeCycle(b.state, cycleId, NOW.slice(0, 10)).months) if (r.month <= p.blocks[p.blocks.length - 1].month) ms.add(r.month);
+    b.dispatchAll([...ms].sort().map((mo) => ['month.close', { scope, month: mo, totals: {}, note: 'مستورد من الإكسيل' }]), opts);
+    report.push(`أُقفلت الشهور المستوردة حتى ${p.blocks[p.blocks.length - 1].month}`);
+  }
+  return { book: b, parsed: p, report, cycleId, layExp, oursTotal };
 }
 
 // مقارنة بأرقام الإكسيل نفسه.
 export function reconcile(extracted, config = {}) {
-  const { book, parsed, cycleId } = buildImport(extracted, config);
+  const { book, parsed, cycleId, layExp, oursTotal } = buildImport(extracted, config);
   const d = computeCycle(book.state, cycleId, NOW.slice(0, 10));
   const checks = [];
   // التسامح: قرش لكل سطر حين يُقسم كل مصروف على الضيف ويُقرَّب منفرداً.
@@ -281,8 +317,8 @@ export function reconcile(extracted, config = {}) {
     if (Number.isFinite(blk.result)) add(`نصيب ناحيتي ${blk.month}`, mine / MONEY, blk.result);
   }
   add('دفعاتي للمدير', d.people.get('me').paidCycle / MONEY, parsed.payments.reduce((s, x) => s + x, 0));
-  const ourCapital = parsed.batches.reduce((s, bt, i) => s + bt.total * parsed.ours[i], 0);
-  add('مصروفات التربية (نصيبنا)', d.totals.capExpenses / MONEY, ourCapital, parsed.batches.reduce((s, bt) => s + bt.items.length, 0) * 0.01);
+  add('رأس المال (نصيبنا) = دفعات التربية − فترة البشاير', d.totals.capExpenses / MONEY, (oursTotal - layExp) / MONEY, parsed.batches.reduce((s, bt) => s + bt.items.length, 0) * 0.01);
+  if (config.subPaid && parsed.subShare) add('دفعة الشريك التابع = نصيبه من رأس المال', config.subPaid, ((oursTotal - layExp) / MONEY) * parsed.subShare, 5);
   return { checks, d, parsed };
 }
 

@@ -5,8 +5,10 @@
 //    via = null ⇒ شريك مباشر مع المدير (رأس «ناحية»)، via = رأس ⇒ شريك تابع يتعامل مع رأسه فقط.
 //  • الضيف (تربية مشتركة): قيد «poultry.guest» يسري من تاريخ: للضيف guestBirds من totalBirds طائر،
 //    فيتحمّل هذه النسبة من كل مصروف تاريخه بعد ذلك (إلا المصروف المعلَّم noGuest). guestBirds = 0 ⇒ انتهى.
-//  • قبل شهر التسوية الأولى (settleFrom) كل شيء «تأسيس وتربية» (رأس مال)، وبعده تسوية شهرية:
+//  • المراحل بشهر الحساب: قبل شهر البشاير (layStart) «تأسيس وتربية» = رأس مال؛ من البشاير حتى أول شهر منتظم
+//    (settleFrom) «فترة البشاير»: تُحاسَب ككتلة واحدة ولا تدخل متوسطات الشهور المنتظمة؛ ومن settleFrom تسوية شهرية:
 //    ربح الشهر = مبيعات شهر الحساب − مصروفاته التشغيلية (حصتنا فقط بعد خصم نصيب الضيف).
+//    بلا layStart: كل ما قبل settleFrom تأسيس وتربية.
 //  • الأرصدة: ما تدين به الدورة (المدير) لكل ناحية = المدفوع − المستلم + نصيبها من النتائج − نصيبه كضيف.
 //    وما يدين به الرأس لكل تابع = ما دفعه التابع للرأس − ما استلمه منه + نصيب التابع من النتائج.
 //    المدير يحمل النقدية: أي عجز أو زيادة عليه، فرصيده = النقدية − أرصدة الباقين.
@@ -45,7 +47,9 @@ export function guestAt(guestList, date) {
 
 const blankMonth = (month) => ({
   month,
-  pre: false,
+  phase: 'rearing', // rearing | lay | regular
+  pre: false, // = تأسيس وتربية (رأس مال)
+  lay: false, // = فترة البشاير
   closed: false,
   sales: 0,
   eggs: { qty: 0, amount: 0, byGrade: {} },
@@ -93,7 +97,9 @@ export function computeCycle(state, cycleId, today = todayISO()) {
   const shares = entries.filter((e) => e.kind === 'poultry.shares').sort((a, b) => cmp(a.from, b.from) || cmp(a.ts, b.ts));
   const guests = entries.filter((e) => e.kind === 'poultry.guest');
   const closed = state.closed.get(scopeOf(cycleId)) || new Map();
-  const isPre = (m) => !cycle.settleFrom || m < cycle.settleFrom;
+  const layMonth = cycle.layStart ? ymOf(cycle.layStart) : null;
+  const phaseOf = (m) => (cycle.settleFrom && m >= cycle.settleFrom ? 'regular' : layMonth && m >= layMonth ? 'lay' : 'rearing');
+  const isPre = (m) => phaseOf(m) === 'rearing';
 
   const months = new Map();
   const M = (m) => {
@@ -208,7 +214,9 @@ export function computeCycle(state, cycleId, today = todayISO()) {
   const totals = { sales: 0, opRevenue: 0, opExpenses: 0, opNet: 0, capExpenses: 0, capRevenue: 0, capNet: 0, guestCost: 0, grossExpenses, net: 0 };
   let unallocated = 0;
   for (const r of monthList) {
-    r.pre = isPre(r.month);
+    r.phase = phaseOf(r.month);
+    r.pre = r.phase === 'rearing';
+    r.lay = r.phase === 'lay';
     r.closed = closed.has(r.month);
     r.closedInfo = closed.get(r.month) || null;
     r.opRevenue = r.pre ? 0 : r.sales;
@@ -238,6 +246,12 @@ export function computeCycle(state, cycleId, today = todayISO()) {
     for (const k of ['sales', 'opRevenue', 'opExpenses', 'opNet', 'capExpenses', 'capRevenue', 'capNet', 'guestCost']) totals[k] += r[k];
   }
   totals.net = totals.opNet + totals.capNet;
+  const sumPhase = (ph) => {
+    const rows = monthList.filter((r) => r.phase === ph && (r.count || ph !== 'regular'));
+    return { from: rows[0]?.month || null, to: rows[rows.length - 1]?.month || null, months: rows.length, revenue: rows.reduce((a, r) => a + r.opRevenue, 0), expenses: rows.reduce((a, r) => a + r.opExpenses, 0), capExpenses: rows.reduce((a, r) => a + r.capExpenses, 0), net: rows.reduce((a, r) => a + r.opNet + r.capNet, 0) };
+  };
+  totals.lay = sumPhase('lay');
+  totals.regular = sumPhase('regular');
 
   // الأرصدة
   for (const p of people.values()) {
@@ -307,6 +321,46 @@ export function computeCycle(state, cycleId, today = todayISO()) {
   };
 }
 
+// تجميع شهور متتالية في «فترة» واحدة بنفس شكل الشهر (لفترة البشاير والتأسيس وأي فترة).
+export function aggregateMonths(rows) {
+  const out = blankMonth(rows[0]?.month || '');
+  out.from = rows[0]?.month || null;
+  out.to = rows[rows.length - 1]?.month || null;
+  out.months = rows.map((r) => r.month);
+  out.phase = rows[0]?.phase || 'regular';
+  out.pre = rows.every((r) => r.pre);
+  out.lay = rows.every((r) => r.lay);
+  out.closed = rows.length > 0 && rows.every((r) => r.closed);
+  out.anyClosed = rows.some((r) => r.closed);
+  out.closedInfo = rows.find((r) => r.closedInfo)?.closedInfo || null;
+  const alloc = new Map();
+  for (const r of rows) {
+    for (const k of ['sales', 'expensesOurs', 'capExpenses', 'opExpenses', 'guestCost', 'opRevenue', 'capRevenue', 'opNet', 'capNet', 'deaths', 'producedTrays', 'count']) out[k] += r[k];
+    out.eggs.qty += r.eggs.qty;
+    out.eggs.amount += r.eggs.amount;
+    for (const [g, v] of Object.entries(r.eggs.byGrade)) {
+      const t = (out.eggs.byGrade[g] ||= { qty: 0, amount: 0 });
+      t.qty += v.qty;
+      t.amount += v.amount;
+    }
+    for (const p of ['manure', 'bags', 'birds', 'other']) for (const [k, v] of Object.entries(r[p])) out[p][k] = (out[p][k] || 0) + v;
+    for (const [c, v] of Object.entries(r.byCategory)) {
+      const t = (out.byCategory[c] ||= { amount: 0, gross: 0, qty: 0, qtyGross: 0 });
+      for (const k of Object.keys(t)) t[k] += v[k] || 0;
+    }
+    for (const [pid, v] of Object.entries(r.guestBy)) out.guestBy[pid] = (out.guestBy[pid] || 0) + v;
+    for (const a of r.alloc) {
+      const key = `${a.personId}|${a.via || ''}`;
+      const t = alloc.get(key) || { personId: a.personId, via: a.via, op: 0, cap: 0 };
+      t.op += a.op;
+      t.cap += a.cap;
+      alloc.set(key, t);
+    }
+  }
+  out.alloc = [...alloc.values()];
+  return out;
+}
+
 // مؤشرات شهر واحد.
 export function monthKpis(r) {
   const trays = r.eggs.qty; // ×1000
@@ -325,9 +379,9 @@ export function monthKpis(r) {
 }
 
 function cycleKpis(months, totals, days) {
-  const settled = months.filter((r) => !r.pre && r.count);
+  const settled = months.filter((r) => r.phase === 'regular' && r.count);
   let breakEven = null;
-  for (const r of settled)
+  for (const r of months.filter((x) => !x.pre && x.count))
     if (r.opRevenue > 0 && r.opNet >= 0) {
       breakEven = r.month;
       break;
@@ -340,15 +394,21 @@ function cycleKpis(months, totals, days) {
   }
   const capital = totals.capExpenses - totals.capRevenue;
   const roi = capital > 0 ? totals.net / capital : null;
+  const avg = settled.length ? settled.reduce((a, r) => a + r.opNet + r.capNet, 0) / settled.length : null;
+  const toRecover = Math.max(0, -totals.net); // المتبقي لاسترداد رأس المال (قبل بيع القطيع)
   return {
     capital,
     roi,
     annualRoi: roi !== null && days > 30 ? (roi * 365) / days : null,
+    // للدورة الشغالة: عائد الشهر المنتظم على رأس المال، والمدة المتوقعة للاسترداد بمتوسط الشهور
+    monthlyReturn: capital > 0 && avg !== null ? avg / capital : null,
+    toRecover,
+    monthsToRecover: toRecover && avg > 0 ? toRecover / avg : null,
     breakEven,
     payback,
     settledMonths: settled.length,
-    avgMonthlyNet: settled.length ? Math.round(totals.opNet / settled.length) : null,
-    margin: totals.opRevenue ? totals.opNet / totals.opRevenue : null,
+    avgMonthlyNet: settled.length ? Math.round(settled.reduce((a, r) => a + r.opNet + r.capNet, 0) / settled.length) : null,
+    margin: totals.regular.revenue ? totals.regular.net / totals.regular.revenue : null,
   };
 }
 
@@ -413,7 +473,7 @@ export function personStatement(data, personId, { head = null } = {}) {
         cap += a.cap;
       }
     }
-    if (op || cap) lines.push({ date: `${r.month}-28`, month: r.month, kind: r.pre ? 'capital' : 'month', amount: op + cap, op, cap });
+    if (op || cap) lines.push({ date: `${r.month}-28`, month: r.month, kind: r.pre ? 'capital' : r.lay ? 'lay' : 'month', amount: op + cap, op, cap });
   }
   if (!head) for (const r of data.months) if (r.guestBy[personId]) lines.push({ date: `${r.month}-28`, month: r.month, kind: 'guest', amount: -r.guestBy[personId] });
   lines.sort((a, b) => cmp(a.date, b.date));

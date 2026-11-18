@@ -81,7 +81,7 @@ export function cycleForm(cycle = null) {
     const age = intInput(cycle?.ageDays ?? '1');
     const lay = h('input', { type: 'date', value: cycle?.layStart || '' });
     const settle = monthSelect(cycle?.settleFrom || '', {});
-    settle.prepend(h('option', { value: '', text: 'لم تبدأ بعد (كله تأسيس وتربية)' }));
+    settle.prepend(h('option', { value: '', text: 'لم ينتظم الإنتاج بعد' }));
     settle.value = cycle?.settleFrom || '';
     const manager = personPicker(cycle?.managerId || '', { placeholder: 'اختر المدير' });
     const groups = listEntities(ctx.state, 'group').map((g) => ({ value: g.id, label: g.name }));
@@ -95,8 +95,8 @@ export function cycleForm(cycle = null) {
       field('المزرعة', farmWrap),
       h('div', { class: 'grid2' }, field('السلالة', breed), field('تاريخ البداية', start)),
       h('div', { class: 'grid2' }, field('عدد الطيور عند الشراء', birds), field('عمر الطائر عند الشراء (يوم)', age)),
-      field('بداية البيض (البشاير)', lay, 'اختياري'),
-      field('أول شهر في التسوية الشهرية', settle, 'قبله: كل المصروفات «تأسيس وتربية» (رأس مال). من هذا الشهر: حساب مكسب/خسارة كل شهر.'),
+      field('بداية البيض (البشاير)', lay, 'قبل شهر البشاير: تأسيس وتربية (رأس مال). من البشاير حتى أول شهر منتظم: «فترة البشاير» تُحاسَب ككتلة واحدة.'),
+      field('أول شهر منتظم في التسوية', settle, 'من هذا الشهر: حساب مكسب/خسارة كل شهر على حدة (بعد انتظام الإنتاج).'),
       field('المدير (السيولة في يده)', manager, 'أي عجز أو زيادة في النقدية يُحسب عليه'),
       h('div', { class: 'grid2' }, field('الحالة', status), field('تاريخ النهاية', end)),
       groups.length ? field('المجموعة', group) : null,
@@ -640,20 +640,34 @@ export function editPoultryEntry(e) {
   return map[e.kind] ? map[e.kind]() : null;
 }
 
-// إقفال/فتح شهر.
+// إقفال/فتح شهر أو فترة (كل شهورها معاً).
 export async function toggleMonthClose(cycleId, r) {
   const scope = `poultry:${cycleId}`;
+  const months = r.months || [r.month];
+  const label = months.length > 1 ? `الفترة ${F.month(months[0])} – ${F.month(months[months.length - 1])}` : `شهر ${F.month(months[0])}`;
   if (r.closed) {
-    const reason = await confirmDialog({ title: `فتح شهر ${F.month(r.month)}`, message: 'فتح الشهر يسمح بتعديل قيوده. سجّل السبب.', okText: 'فتح الشهر', input: { label: 'السبب', required: true } });
+    const reason = await confirmDialog({ title: `فتح ${label}`, message: 'الفتح يسمح بتعديل القيود. سجّل السبب.', okText: 'فتح', input: { label: 'السبب', required: true } });
     if (!reason) return;
-    await ctx.store.run((b) => b.dispatch('month.reopen', { scope, month: r.month, reason }));
-    toast('تم فتح الشهر');
+    const closed = new Set(ctx.state.closed.get(scope)?.keys() || []);
+    await ctx.store.run((b) => b.dispatchAll(months.filter((m) => closed.has(m)).map((m) => ['month.reopen', { scope, month: m, reason }])));
+    toast('تم الفتح');
     return;
   }
-  const ok = await confirmDialog({ title: `إقفال شهر ${F.month(r.month)}`, message: `بعد الإقفال لا يُضاف ولا يُعدَّل أي قيد على حساب هذا الشهر.\nالمبيعات ${F.money(r.sales)} · المصروفات ${F.money(r.expensesOurs)} · الصافي ${F.money(r.opNet + r.capNet)}`, okText: 'إقفال' });
+  const ok = await confirmDialog({ title: `إقفال ${label}`, message: `بعد الإقفال لا يُضاف ولا يُعدَّل أي قيد على حسابها.\nالمبيعات ${F.money(r.sales)} · المصروفات ${F.money(r.expensesOurs)} · الصافي ${F.money(r.opNet + r.capNet)}`, okText: 'إقفال' });
   if (!ok) return;
-  await ctx.store.run((b) => b.dispatch('month.close', { scope, month: r.month, totals: { sales: r.sales, expenses: r.expensesOurs, opNet: r.opNet, capNet: r.capNet, alloc: r.alloc } }));
-  toast('تم إقفال الشهر');
+  const closed = new Set(ctx.state.closed.get(scope)?.keys() || []);
+  const data = cycleData(ctx.state, cycleId);
+  await ctx.store.run((b) =>
+    b.dispatchAll(
+      months
+        .filter((m) => !closed.has(m))
+        .map((m) => {
+          const x = data.months.find((y) => y.month === m);
+          return ['month.close', { scope, month: m, totals: x ? { sales: x.sales, expenses: x.expensesOurs, opNet: x.opNet, capNet: x.capNet, alloc: x.alloc } : {} }];
+        }),
+    ),
+  );
+  toast('تم الإقفال');
 }
 
 export { formatShare };

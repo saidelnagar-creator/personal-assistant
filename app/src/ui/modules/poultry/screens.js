@@ -7,7 +7,7 @@ import { entity, listEntities } from '../../../core/engine.js';
 import { QTY } from '../../../core/money.js';
 import { addMonths } from '../../../core/util.js';
 import { CYCLE_STATUS, PRODUCTS, EGGS_PER_TRAY } from '../../../core/modules/poultry/config.js';
-import { cycleData, monthKpis, periodStats, personStatement } from '../../../core/modules/poultry/calc.js';
+import { aggregateMonths, cycleData, monthKpis, periodStats, personStatement } from '../../../core/modules/poultry/calc.js';
 import { countForm, cycleForm, expenseForm, guestForm, logForm, monthBatchForm, paymentForm, saleForm, sharesForm, toggleMonthClose } from './forms.js';
 import { personName } from '../../forms-common.js';
 
@@ -24,7 +24,7 @@ export function cyclesScreen() {
   const card = (c) => {
     const d = cycleData(ctx.state, c.id);
     const me = d.people.get('me');
-    const last = d.months.filter((r) => !r.pre).slice(-1)[0];
+    const last = d.months.filter((r) => !r.pre && r.count).slice(-1)[0];
     return row({
       title: c.name,
       subtitle: [F.date(c.startDate), `${F.num(c.birds || 0)} طائر`, `عمر ${F.num(Math.floor(d.ageDays / 7))} أسبوع`, last ? `${F.month(last.month)}: ${F.money(last.opNet)}` : 'لم تبدأ التسوية'].join(' · '),
@@ -133,15 +133,20 @@ function summaryTab(c, d) {
       'div',
       { class: 'card' },
       kv('تأسيس وتربية (رأس مال)', F.money(d.totals.capExpenses), '', { pg: PG }),
-      d.totals.capRevenue ? kv('مبيعات قبل التسوية', F.money(d.totals.capRevenue), 'pos', { pg: PG }) : null,
+      d.totals.capRevenue ? kv('مبيعات أثناء التربية', F.money(d.totals.capRevenue), 'pos', { pg: PG }) : null,
       d.totals.guestCost ? kv('ما تحمّله الضيف', F.money(d.totals.guestCost), '', { pg: PG }) : null,
-      kv('مبيعات الشهور', F.money(d.totals.opRevenue), 'pos', { pg: PG }),
-      kv('مصروفات الشهور', F.money(d.totals.opExpenses), 'neg', { pg: PG }),
-      kv('ربح التشغيل', F.money(d.totals.opNet), signClass(d.totals.opNet), { pg: PG }),
+      d.totals.lay.months ? kv(`فترة البشاير (${periodLabel(d.totals.lay.from, d.totals.lay.to)})`, F.money(d.totals.lay.net), signClass(d.totals.lay.net), { pg: PG }) : null,
+      kv('مبيعات الشهور المنتظمة', F.money(d.totals.regular.revenue), 'pos', { pg: PG }),
+      kv('مصروفات الشهور المنتظمة', F.money(d.totals.regular.expenses + d.totals.regular.capExpenses), 'neg', { pg: PG }),
+      kv('ربح الشهور المنتظمة', F.money(d.totals.regular.net), signClass(d.totals.regular.net), { pg: PG }),
       kv('صافي الدورة (بعد رأس المال)', F.money(d.totals.net), signClass(d.totals.net), { pg: PG }),
-      kv('العائد على رأس المال', F.pct(k.roi), '', { pg: PG, secret: true }),
-      k.annualRoi !== null ? kv('العائد السنوي التقريبي', F.pct(k.annualRoi), '', { pg: PG, secret: true }) : null,
-      kv('متوسط ربح الشهر', k.avgMonthlyNet === null ? '—' : F.money(k.avgMonthlyNet), '', { pg: PG }),
+      kv('متوسط ربح الشهر المنتظم', k.avgMonthlyNet === null ? '—' : F.money(k.avgMonthlyNet), '', { pg: PG }),
+      ...((c.status || 'active') === 'active'
+        ? [
+            k.monthlyReturn !== null ? kv('عائد الشهر على رأس المال', `${F.pct(k.monthlyReturn)} شهرياً · ${F.pct(k.monthlyReturn * 12)} سنوياً`, '', { pg: PG, secret: true }) : null,
+            k.toRecover ? kv('المتبقي لاسترداد رأس المال', `${F.money(k.toRecover)}${k.monthsToRecover ? ` (~${F.num(Math.ceil(k.monthsToRecover))} شهر بالمتوسط، قبل بيع القطيع)` : ''}`, '', { pg: PG }) : null,
+          ]
+        : [kv('العائد على رأس المال (الدورة كاملة)', F.pct(k.roi), '', { pg: PG, secret: true }), k.annualRoi !== null ? kv('العائد السنوي', F.pct(k.annualRoi), '', { pg: PG, secret: true }) : null]),
       kv('نقطة الاتزان (أول شهر بيع ≥ تشغيل)', k.breakEven ? F.month(k.breakEven) : 'لم تصل', '', { secret: false }),
       kv('استرداد رأس المال', k.payback ? F.month(k.payback) : 'لم يُسترد بعد', '', { secret: false }),
     ),
@@ -157,32 +162,60 @@ function summaryTab(c, d) {
   );
 }
 
+const periodLabel = (from, to) => (from === to ? F.month(from) : `${F.monthShort(from)} – ${F.month(to)}`);
+
 function recentMonths(c, d) {
-  const rows = d.months.filter((r) => !r.pre && r.count).slice(-4).reverse();
+  const rows = d.months.filter((r) => r.phase === 'regular' && r.count).slice(-4).reverse();
   if (!rows.length) return null;
   return h('div', {}, sectionTitle('آخر الشهور', h('button', { class: 'link', text: 'كل الشهور', onclick: () => ctx.nav(`#/poultry/cycle/${c.id}/months`) })), monthsList(c, rows));
 }
 
+const sideOf = (r) => r.alloc.filter((a) => a.personId === 'me' || a.via === 'me').reduce((s, a) => s + a.op + a.cap, 0);
+
+function monthRow(c, r) {
+  const mine = sideOf(r);
+  return row({
+    title: F.month(r.month),
+    subtitle: `مبيعات ${F.money(r.sales)} · مصروفات ${F.money(r.expensesOurs)}${r.alloc.length ? ` · ناحيتي ${F.money(mine)}` : ''}`,
+    value: F.money(r.opNet + r.capNet),
+    valueClass: signClass(r.opNet + r.capNet),
+    badge: r.closed ? badge('مقفول', 'ok') : r.count ? null : badge('فارغ'),
+    onclick: () => ctx.nav(`#/poultry/cycle/${c.id}/month/${r.month}`),
+    pk: `poultry|month`,
+  });
+}
+
+// فترة (تأسيس أو بشاير) كسطر واحد يفتح شاشة الفترة.
+function periodRow(c, rows, title) {
+  const a = aggregateMonths(rows);
+  return row({
+    title: `${title} (${periodLabel(a.from, a.to)})`,
+    subtitle: `مبيعات ${F.money(a.sales)} · مصروفات ${F.money(a.expensesOurs)}${a.alloc.length ? ` · ناحيتي ${F.money(sideOf(a))}` : ''}`,
+    value: F.money(a.opNet + a.capNet),
+    valueClass: signClass(a.opNet + a.capNet),
+    badge: a.closed ? badge('مقفول', 'ok') : null,
+    onclick: () => ctx.nav(`#/poultry/cycle/${c.id}/period/${a.from}/${a.to}`),
+    pk: `poultry|period`,
+  });
+}
+
 function monthsList(c, rows) {
-  return list(
-    rows.map((r) => {
-      const mine = r.alloc.filter((a) => a.personId === 'me' || a.via === 'me').reduce((s, a) => s + a.op + a.cap, 0);
-      return row({
-        title: r.pre ? `${F.month(r.month)} · تأسيس` : F.month(r.month),
-        subtitle: `مبيعات ${F.money(r.sales)} · مصروفات ${F.money(r.expensesOurs)}${r.alloc.length ? ` · ناحيتي ${F.money(mine)}` : ''}`,
-        value: F.money(r.opNet + r.capNet),
-        valueClass: signClass(r.opNet + r.capNet),
-        badge: r.closed ? badge('مقفول', 'ok') : r.count ? null : badge('فارغ'),
-        onclick: () => ctx.nav(`#/poultry/cycle/${c.id}/month/${r.month}`),
-        pk: `poultry|month`,
-      });
-    }),
-  );
+  return list(rows.map((r) => monthRow(c, r)));
 }
 
 function monthsTab(c, d) {
-  const rows = d.months.slice().reverse();
-  return h('div', {}, h('p', { class: 'muted small', text: 'كل شهر بحسب «شهر الحساب». اضغط شهراً لتفاصيله وإقفاله بعد التحاسب.' }), rows.length ? monthsList(c, rows) : empty('لا توجد قيود بعد'));
+  const regular = d.months.filter((r) => r.phase === 'regular').reverse();
+  const lay = d.months.filter((r) => r.phase === 'lay');
+  const rearing = d.months.filter((r) => r.phase === 'rearing');
+  const items = [...regular.map((r) => monthRow(c, r))];
+  if (lay.length) items.push(periodRow(c, lay, '🐣 فترة البشاير'));
+  if (rearing.length) items.push(periodRow(c, rearing, '🏗️ التأسيس والتربية'));
+  return h(
+    'div',
+    {},
+    h('p', { class: 'muted small', text: 'كل شهر بحسب «شهر الحساب». فترة البشاير (من أول البيض حتى انتظام الإنتاج) والتأسيس يظهر كل منهما ككتلة واحدة. اضغط لتفاصيله وإقفاله بعد التحاسب.' }),
+    items.length ? list(items) : empty('لا توجد قيود بعد'),
+  );
 }
 
 function entriesTab(c, d) {
@@ -271,7 +304,7 @@ function partnersTab(c, d) {
 }
 
 function kpisTab(c, d) {
-  const settled = d.months.filter((r) => !r.pre && r.count);
+  const settled = d.months.filter((r) => r.phase === 'regular' && r.count);
   const withData = d.months.filter((r) => r.count);
   const f = ui(`poultry-kpi-${c.id}`, { from: settled[0]?.month || withData[0]?.month || ctx.nowMonth(), to: withData[withData.length - 1]?.month || ctx.nowMonth() });
   const fromSel = monthSelect(f.from);
@@ -288,7 +321,7 @@ function kpisTab(c, d) {
     .filter((r) => r.month >= f.from && r.month <= f.to && r.count)
     .map((r) => {
       const k = monthKpis(r);
-      return [F.monthShort(r.month) + ' ' + r.month.slice(2, 4), F.qty(k.trays, { decimals: 0 }), k.eggAvg === null ? '—' : F.money(k.eggAvg, { decimals: 1 }), k.costPerTray === null ? '—' : F.money(k.costPerTray, { decimals: 1 }), F.qty(k.feedQty, { decimals: 2 }), k.feedPerTray === null ? '—' : F.num(Math.round(k.feedPerTray * 100) / 100), F.money(r.opNet + r.capNet, { decimals: 0 })];
+      return [(r.lay ? '🐣 ' : r.pre ? '🏗️ ' : '') + F.monthShort(r.month) + ' ' + r.month.slice(2, 4), F.qty(k.trays, { decimals: 0 }), k.eggAvg === null ? '—' : F.money(k.eggAvg, { decimals: 1 }), k.costPerTray === null ? '—' : F.money(k.costPerTray, { decimals: 1 }), F.qty(k.feedQty, { decimals: 2 }), k.feedPerTray === null ? '—' : F.num(Math.round(k.feedPerTray * 100) / 100), F.money(r.opNet + r.capNet, { decimals: 0 })];
     });
   return h(
     'div',
@@ -327,21 +360,26 @@ function setupTab(c, d) {
   );
 }
 
-export function monthScreen({ id, month }) {
+export const monthScreen = ({ id, month }) => periodScreen({ id, from: month, to: month });
+
+export function periodScreen({ id, from, to }) {
   const c = entity(ctx.state, 'poultry.cycle', id);
   if (!c) return { title: 'غير موجود', body: empty('الدورة غير موجودة') };
   const d = cycleData(ctx.state, id);
-  const r = d.months.find((x) => x.month === month);
-  if (!r) return { title: F.month(month), body: h('div', {}, empty('لا توجد قيود في هذا الشهر'), actions(c, month)) };
+  const single = from === to;
+  const rows = d.months.filter((x) => x.month >= from && x.month <= to);
+  if (!rows.length || !rows.some((x) => x.count)) return { title: c.name, subtitle: periodLabel(from, to), body: h('div', {}, empty('لا توجد قيود في هذه الفترة'), actions(c, to)) };
+  const r = aggregateMonths(rows);
   const k = monthKpis(r);
-  const entries = d.entries.filter((e) => e.month === month);
+  const entries = d.entries.filter((e) => e.month && e.month >= from && e.month <= to);
+  const phaseName = r.pre ? 'التأسيس والتربية (رأس مال)' : r.lay ? 'فترة البشاير' : '';
   const salesRows = [];
   for (const [g, v] of Object.entries(r.eggs.byGrade)) salesRows.push([`بيض ${entity(ctx.state, 'poultry.grade', g)?.name || g}`, F.qty(v.qty, { decimals: 0 }), F.money(Math.round((v.amount * QTY) / v.qty), { decimals: 2 }), F.money(v.amount)]);
   for (const p of ['bags', 'manure', 'birds', 'other']) if (r[p].amount) salesRows.push([PRODUCTS[p].name, r[p].qty ? F.qty(r[p].qty, { decimals: 0 }) : '', '', F.money(r[p].amount)]);
   const expRows = Object.entries(r.byCategory).map(([cat, v]) => [entity(ctx.state, 'poultry.category', cat)?.name || cat, v.qty ? F.qty(v.qty, { decimals: 3 }) : '', F.money(v.gross), F.money(v.amount)]);
   return {
-    title: `${c.name}`,
-    subtitle: `${F.month(month)}${r.pre ? ' · تأسيس وتربية' : ''}${r.closed ? ' · مقفول' : ''}`,
+    title: c.name,
+    subtitle: [single ? F.month(from) : periodLabel(from, to), phaseName, r.closed ? 'مقفول' : ''].filter(Boolean).join(' · '),
     body: h(
       'div',
       {},
@@ -350,22 +388,23 @@ export function monthScreen({ id, month }) {
         { class: 'stats' },
         st('المبيعات', F.money(r.sales), { valueClass: 'pos', hint: r.eggs.qty ? `${trays(r.eggs.qty)} · ${perTray(k.eggAvg)}` : '' }),
         st('المصروفات (حصتنا)', F.money(r.expensesOurs), { valueClass: 'neg', hint: r.guestCost ? `الضيف ${F.money(r.guestCost)}` : k.costPerTray ? `تكلفة ${perTray(k.costPerTray)}` : '' }),
-        st(r.pre ? 'صافي (رأس مال)' : 'ربح/خسارة الشهر', F.money(r.opNet + r.capNet), { valueClass: signClass(r.opNet + r.capNet), cls: 'wide', hint: r.capExpenses && !r.pre ? `منه رأسمالي ${F.money(-r.capExpenses)}` : '' }),
+        st(r.pre ? 'صافي (رأس مال)' : r.lay ? 'صافي فترة البشاير' : 'ربح/خسارة الشهر', F.money(r.opNet + r.capNet), { valueClass: signClass(r.opNet + r.capNet), cls: 'wide', hint: r.capExpenses && !r.pre ? `منه رأسمالي ${F.money(-r.capExpenses)}` : '' }),
       ),
-      r.closed ? h('div', { class: 'banner info', text: `الشهر مقفول منذ ${F.dateTime(r.closedInfo.ts)} — لا يُعدَّل إلا بعد فتحه.` }) : actions(c, month),
+      r.lay ? h('p', { class: 'muted small', text: 'فترة البشاير: من أول البيض حتى انتظام الإنتاج. تُحاسَب ككتلة واحدة ولا تدخل متوسطات الشهور المنتظمة.' }) : null,
+      r.closed ? h('div', { class: 'banner info', text: `${single ? 'الشهر' : 'الفترة'} مقفول${single ? '' : 'ة'} — لا يُعدَّل إلا بعد الفتح.` }) : actions(c, to),
       salesRows.length ? h('div', {}, sectionTitle('المبيعات'), table([{ label: 'الصنف' }, { label: 'العدد', num: true }, { label: 'متوسط', num: true }, { label: 'المبلغ', num: true }], salesRows, { totalRow: ['الإجمالي', '', '', F.money(r.sales)], pg: PG })) : null,
       expRows.length ? h('div', {}, sectionTitle('المصروفات'), table([{ label: 'البند' }, { label: 'الكمية', num: true }, { label: 'الإجمالي', num: true }, { label: 'حصتنا', num: true }], expRows, { totalRow: ['الإجمالي', '', F.money(r.expensesOurs + r.guestCost), F.money(r.expensesOurs)], pg: PG })) : null,
       r.alloc.length ? h('div', {}, sectionTitle('التوزيع على الشركاء'), table([{ label: 'الشريك' }, { label: 'النصيب', num: true }], r.alloc.map((a) => [personName(a.personId) + (a.via ? ` (تابع لـ ${personName(a.via)})` : ''), F.money(a.op + a.cap)]), { pg: PG })) : null,
       r.deaths || r.producedTrays ? h('div', { class: 'card' }, r.deaths ? kv('النافق المسجل', F.num(r.deaths), '', { secret: false }) : null, r.producedTrays ? kv('الإنتاج المسجل', trays(r.producedTrays), '', { secret: false }) : null) : null,
-      sectionTitle('قيود الشهر'),
+      sectionTitle('القيود'),
       entryList(entries.slice().reverse()),
-      h('button', { class: `btn block ${r.closed ? '' : 'primary'}`, style: { marginTop: '12px' }, text: r.closed ? 'فتح الشهر للتعديل' : 'إقفال الشهر (تم التحاسب)', onclick: () => toggleMonthClose(id, r) }),
-      h('div', { class: 'btn-row', style: { marginTop: '8px' } }, h('button', { class: 'btn small', text: '‹ الشهر السابق', onclick: () => ctx.nav(`#/poultry/cycle/${id}/month/${addMonths(month, -1)}`) }), h('button', { class: 'btn small', text: 'الشهر التالي ›', onclick: () => ctx.nav(`#/poultry/cycle/${id}/month/${addMonths(month, 1)}`) })),
+      h('button', { class: `btn block ${r.closed ? '' : 'primary'}`, style: { marginTop: '12px' }, text: r.closed ? 'فتح للتعديل' : single ? 'إقفال الشهر (تم التحاسب)' : 'إقفال الفترة (تم التحاسب)', onclick: () => toggleMonthClose(id, r) }),
+      single ? h('div', { class: 'btn-row', style: { marginTop: '8px' } }, h('button', { class: 'btn small', text: '‹ الشهر السابق', onclick: () => ctx.nav(`#/poultry/cycle/${id}/month/${addMonths(from, -1)}`) }), h('button', { class: 'btn small', text: 'الشهر التالي ›', onclick: () => ctx.nav(`#/poultry/cycle/${id}/month/${addMonths(from, 1)}`) })) : null,
     ),
   };
 }
 
-const LINE_LABEL = { paid: 'دفع', received: 'استلم', month: 'نصيب شهر', capital: 'نصيب التأسيس', guest: 'نصيبه كضيف من المصروف' };
+const LINE_LABEL = { paid: 'دفع', received: 'استلم', month: 'نصيب شهر', lay: 'نصيب فترة البشاير', capital: 'نصيب التأسيس', guest: 'نصيبه كضيف من المصروف' };
 
 export function cyclePersonScreen({ id, personId, head }) {
   const c = entity(ctx.state, 'poultry.cycle', id);

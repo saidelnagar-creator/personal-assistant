@@ -68,7 +68,7 @@ export async function createCycle(page, { name = 'دورة-اختبار', start 
   await s.getByLabel('اسم مميز للدورة').fill(name);
   await s.getByLabel('تاريخ البداية').fill(start);
   await s.getByLabel('عدد الطيور عند الشراء').fill('5000');
-  if (settle) await s.getByLabel('أول شهر في التسوية الشهرية').selectOption(settle);
+  if (settle) await s.getByLabel('أول شهر منتظم في التسوية').selectOption(settle);
   await newPerson(page, s.locator('.field', { hasText: 'المدير' }), 'مدير الاختبار');
   await s.getByRole('button', { name: 'حفظ' }).click();
   await page.waitForSelector('.sheet .lines');

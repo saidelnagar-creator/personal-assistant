@@ -4,7 +4,7 @@ import { ctx, F } from '../../ctx.js';
 import { row, list } from '../../components.js';
 import { listEntities } from '../../../core/engine.js';
 import { cycleData } from '../../../core/modules/poultry/calc.js';
-import { cyclesScreen, cycleScreen, monthScreen, cyclePersonScreen, farmsScreen } from './screens.js';
+import { cyclesScreen, cycleScreen, monthScreen, periodScreen, cyclePersonScreen, farmsScreen } from './screens.js';
 import { editPoultryEntry } from './forms.js';
 import { signClass } from '../../widgets.js';
 
@@ -19,6 +19,7 @@ export default {
     [/^\/poultry\/farms$/, farmsScreen, T, 'poultry'],
     [/^\/poultry\/cycle\/([^/]+)(?:\/(summary|months|entries|partners|kpis|setup))?$/, (m) => cycleScreen({ id: m[1], tab: m[2] || 'summary' }), T, 'poultry'],
     [/^\/poultry\/cycle\/([^/]+)\/month\/(\d{4}-\d{2})$/, (m) => monthScreen({ id: m[1], month: m[2] }), T, 'poultry'],
+    [/^\/poultry\/cycle\/([^/]+)\/period\/(\d{4}-\d{2})\/(\d{4}-\d{2})$/, (m) => periodScreen({ id: m[1], from: m[2], to: m[3] }), T, 'poultry'],
     [/^\/poultry\/cycle\/([^/]+)\/person\/([^/]+)(?:\/via\/([^/]+))?$/, (m) => cyclePersonScreen({ id: m[1], personId: m[2], head: m[3] || null }), T, 'poultry'],
   ],
   editEntry: (e) => (e.kind.startsWith('poultry.') ? editPoultryEntry(e) : null),

@@ -69,7 +69,12 @@ export default {
         check(!x.groupId || entity(s, 'group', x.groupId), 'المجموعة غير موجودة');
         if (prev && (prev.settleFrom || null) !== (x.settleFrom || null)) {
           const lo = [prev.settleFrom, x.settleFrom].filter(Boolean).sort()[0] || '0000-00';
-          check(!closedFrom(s, x.id, lo).length, 'لا يمكن تغيير شهر بداية التسوية بعد إقفال شهور تتأثر به. افتح الشهور أولاً.');
+          check(!closedFrom(s, x.id, lo).length, 'لا يمكن تغيير أول شهر منتظم بعد إقفال شهور تتأثر به. افتح الشهور أولاً.');
+        }
+        const lm = (d) => (d ? ymOf(d) : null);
+        if (prev && lm(prev.layStart) !== lm(x.layStart)) {
+          const lo = [lm(prev.layStart), lm(x.layStart)].filter(Boolean).sort()[0] || '0000-00';
+          check(!closedFrom(s, x.id, lo).length, 'لا يمكن تغيير شهر البشاير بعد إقفال شهور تتأثر به. افتح الشهور أولاً.');
         }
       },
     },
@@ -216,9 +221,10 @@ export default {
     const out = [];
     const lastDone = addMonths(ymOf(today), -1);
     for (const c of listEntities(state, 'poultry.cycle')) {
-      if ((c.status || 'active') !== 'active' || !c.settleFrom || c.settleFrom > lastDone) continue;
+      const first = c.layStart && (!c.settleFrom || ymOf(c.layStart) < c.settleFrom) ? ymOf(c.layStart) : c.settleFrom;
+      if ((c.status || 'active') !== 'active' || !first || first > lastDone || !c.settleFrom) continue;
       const open = [];
-      for (let m = c.settleFrom; m <= lastDone; m = addMonths(m, 1)) if (!isClosed(state, scopeOf(c.id), m)) open.push(m);
+      for (let m = first; m <= lastDone; m = addMonths(m, 1)) if (!isClosed(state, scopeOf(c.id), m)) open.push(m);
       if (!open.length) continue;
       out.push({ id: `poultry-close-${c.id}-${open[0]}`, due: `${addMonths(open[0], 1)}-10`, title: open.length === 1 ? `تسوية شهر ${open[0]} لدورة ${c.name}` : `${open.length} شهور تسوية مفتوحة لدورة ${c.name} (أقدمها ${open[0]})`, level: `${addMonths(open[0], 1)}-10` < today ? 'overdue' : 'upcoming', href: `#/poultry/cycle/${c.id}/months` });
     }

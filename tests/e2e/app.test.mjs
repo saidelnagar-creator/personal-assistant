@@ -60,9 +60,9 @@ test('دورة كاملة: إنشاء، حصص، إدخال شهر، دفعة، 
     await page.waitForSelector('.banner.info');
     assert.match(await page.locator('#screen').innerText(), /مقفول/);
     // فتح الشهر بسبب، ثم تعديل سطر الأجرة إلى 9500
-    await page.getByRole('button', { name: 'فتح الشهر للتعديل' }).click();
+    await page.getByRole('button', { name: 'فتح للتعديل' }).click();
     await page.locator('.dialog input').fill('تصحيح الأجرة');
-    await page.locator('.dialog').getByRole('button', { name: 'فتح الشهر' }).click();
+    await page.locator('.dialog').getByRole('button', { name: 'فتح', exact: true }).click();
     await page.getByRole('button', { name: /أجرة العمال/ }).click();
     await page.getByRole('button', { name: 'تعديل' }).click();
     await sheet(page).getByLabel('المبلغ').fill('9500');

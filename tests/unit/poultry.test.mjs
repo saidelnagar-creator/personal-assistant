@@ -151,3 +151,36 @@ test('تغيير الحصص من شهر لاحق لا يمس الشهور الس
   assert.equal(dec.alloc.find((a) => a.personId === 'me').op, -8000);
   assert.equal(dec.alloc.length, 2);
 });
+
+test('فترة البشاير: من شهر البشاير حتى أول شهر منتظم، ليست رأس مال ولا تدخل متوسط الشهور المنتظمة', async () => {
+  const { aggregateMonths } = await import('../../app/src/core/modules/poultry/calc.js');
+  const b = demoBook({ settleFrom: '2025-11' });
+  b.upsert('poultry.cycle', { id: 'c1', layStart: '2025-09-10' }, opts);
+  b.addEntries([
+    exp('c1', '2025-07-10', '2025-07', 'feed', 60000),
+    exp('c1', '2025-09-15', '2025-09', 'feed', 30000),
+    eggs('c1', '2025-10-20', '2025-10', 100, 100),
+    exp('c1', '2025-10-20', '2025-10', 'vet', 6000),
+    eggs('c1', '2025-11-20', '2025-11', 500, 100),
+    exp('c1', '2025-11-20', '2025-11', 'feed', 20000),
+  ], opts);
+  const d = computeCycle(b.state, 'c1', '2025-11-30');
+  const m = Object.fromEntries(d.months.map((r) => [r.month, r]));
+  assert.equal(m['2025-07'].phase, 'rearing');
+  assert.equal(m['2025-09'].phase, 'lay');
+  assert.equal(m['2025-10'].phase, 'lay');
+  assert.equal(m['2025-11'].phase, 'regular');
+  assert.equal(d.totals.capExpenses, 60000);
+  assert.deepEqual([d.totals.lay.from, d.totals.lay.to, d.totals.lay.net], ['2025-09', '2025-10', 10000 - 36000]);
+  assert.equal(d.totals.regular.net, 30000);
+  assert.equal(d.kpis.avgMonthlyNet, 30000);
+  assert.equal(d.totals.net, -60000 - 26000 + 30000);
+  const agg = aggregateMonths([m['2025-09'], m['2025-10']]);
+  assert.equal(agg.opNet, -26000);
+  assert.equal(agg.alloc.reduce((s, a) => s + a.op, 0), -26000);
+  const me = personStatement(d, 'me');
+  assert.ok(me.some((l) => l.kind === 'lay'));
+  // تغيير شهر البشاير ممنوع بعد إقفال شهر يتأثر به
+  b.dispatch('month.close', { scope: 'poultry:c1', month: '2025-10', totals: {} }, opts);
+  assert.throws(() => b.upsert('poultry.cycle', { id: 'c1', layStart: '2025-10-01' }, opts), /البشاير/);
+});
