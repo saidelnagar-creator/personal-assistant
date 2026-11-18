@@ -16,7 +16,7 @@
 import { activeEntries, entity } from '../../engine.js';
 import { allocate } from '../../shares.js';
 import { QTY, mulDiv } from '../../money.js';
-import { addMonths, cmp, daysBetween, daysInMonth, monthsRange, todayISO, ymOf } from '../../util.js';
+import { addMonths, cmp, daysBetween, daysInMonth, lastDayOf, monthsRange, todayISO, ymOf } from '../../util.js';
 
 export const scopeOf = (cycleId) => `poultry:${cycleId}`;
 const byDate = (a, b) => cmp(a.date, b.date) || cmp(a.ts, b.ts);
@@ -38,6 +38,13 @@ export function sharesAt(sharesList, month) {
   let cur = null;
   for (const s of sharesList) if (s.from <= month) cur = s;
   return cur || sharesList[0] || null;
+}
+
+// تاريخ القيد لحساب نصيب الضيف: التاريخ الفعلي إن وقع داخل شهر الحساب، وإلا أقرب يوم منه
+// (قيد متأخر على حساب فترة التأسيس يتحمّل الضيف نسبته منه كما لو صُرف وقتها).
+export function guestDate(e) {
+  if (!e.month || ymOf(e.date) === e.month) return e.date;
+  return e.date > e.month ? lastDayOf(e.month) : `${e.month}-01`;
 }
 
 export function guestAt(guestList, date) {
@@ -130,7 +137,7 @@ export function computeCycle(state, cycleId, today = todayISO()) {
       case 'poultry.expense': {
         const r = M(e.month);
         r.count++;
-        const g = e.noGuest ? null : guestAt(guests, e.date);
+        const g = e.noGuest ? null : guestAt(guests, guestDate(e));
         const gp = g ? mulDiv(e.amount, g.guestBirds, g.totalBirds) : 0;
         const ours = e.amount - gp;
         if (g) {

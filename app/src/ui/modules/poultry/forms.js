@@ -3,10 +3,10 @@ import { h, clear } from '../../dom.js';
 import { ctx, F } from '../../ctx.js';
 import { checkbox, chips, dateInput, errorBox, field, intInput, moneyInput, monthSelect, openSheet, qtyInput, selectInput, textArea, textInput, toast, confirmDialog } from '../../components.js';
 import { commitEntry, personName, personPicker, saveButton, simpleEntityForm } from '../../forms-common.js';
-import { entity, listEntities } from '../../../core/engine.js';
+import { entity, isClosed, listEntities } from '../../../core/engine.js';
 import { lineAmount, QTY } from '../../../core/money.js';
 import { parseShare, sumShares, formatShare } from '../../../core/shares.js';
-import { ValidationError, ymOf, lastDayOf } from '../../../core/util.js';
+import { ValidationError, ymOf, lastDayOf, addMonths, monthsRange } from '../../../core/util.js';
 import { BREEDS, CYCLE_STATUS, PRODUCTS } from '../../../core/modules/poultry/config.js';
 import { cycleData, guestAt } from '../../../core/modules/poultry/calc.js';
 
@@ -17,16 +17,90 @@ const need = (cond, msg) => {
   if (!cond) throw new ValidationError(msg);
 };
 
-// تاريخ + شهر حساب مرتبطان: تغيير التاريخ يغيّر الشهر ما لم يغيّره المستخدم يدوياً.
-function dateMonth(date, month) {
+// الفترات التي يُضاف عليها قيد في الدورة: التأسيس (التربية)، البشاير، أو شهر منتظم — كل منها بشهوره.
+// include: شهر يجب أن يظهر (عند تعديل قيد قديم أو شهر بعيد).
+export function cyclePeriods(c, { include = null, today = ctx.today() } = {}) {
+  let now = ymOf(today);
+  if (include && include > now) now = include;
+  const start = include && include < ymOf(c.startDate) ? include : ymOf(c.startDate);
+  const lay = c.layStart ? ymOf(c.layStart) : null;
+  const settle = c.settleFrom || null;
+  const hasLay = !!lay && (!settle || lay < settle);
+  const firstOp = hasLay ? lay : settle;
+  const out = [];
+  const rearingEnd = firstOp ? addMonths(firstOp, -1) : now > start ? now : start;
+  if (rearingEnd >= start) out.push({ kind: 'rearing', short: 'التأسيس', months: monthsRange(start, rearingEnd), hint: 'يُضاف لتكلفة التأسيس ويوزَّع بحصص الشركاء في الشهر المختار (ويتحمّل الضيف نسبته لو كان موجوداً وقتها).' });
+  if (hasLay) out.push({ kind: 'lay', short: 'البشاير', months: monthsRange(lay, settle ? addMonths(settle, -1) : now > lay ? now : lay), hint: 'يُحسب ضمن فترة البشاير (صرفها ودخلها معاً)، وصافيها يُضاف للتأسيس ويوزَّع بالحصص.' });
+  if (settle) out.push({ kind: 'month', short: 'شهر منتظم', months: monthsRange(settle, addMonths(now > settle ? now : settle, 2)), hint: 'يدخل في حساب هذا الشهر ويوزَّع بحصص الشركاء فيه.' });
+  return out;
+}
+
+// التاريخ الفعلي + «الحساب على»: فترة التأسيس، أو فترة البشاير، أو شهر منتظم محدد.
+// الشهور المقفولة تظهر بقفل، مع زر لفتحها بسبب. onTarget: يُستدعى عند تغيير الشهر المستهدف.
+function dateTarget(cycleId, date, month, { onTarget = null, dateLabel = 'التاريخ الفعلي' } = {}) {
+  const c = cycleOf(cycleId);
+  const scope = `poultry:${cycleId}`;
   const d = dateInput(date);
-  const m = monthSelect(month || ymOf(d.value));
-  let touched = !!month && month !== ymOf(d.value);
-  m.addEventListener('change', () => (touched = true));
-  d.addEventListener('change', () => {
-    if (!touched && d.value) m.value = ymOf(d.value);
+  const periods = cyclePeriods(c, { include: month || null });
+  const kindOf = (mo) => periods.find((p) => p.months.includes(mo))?.kind || null;
+  let kind = (month && kindOf(month)) || kindOf(ymOf(d.value)) || periods[periods.length - 1].kind;
+  let touched = !!month;
+  let sel = null;
+  const selBox = h('div', {});
+  const info = h('div', { class: 'hint' });
+  const closed = (mo) => isClosed(ctx.state, scope, mo);
+  const status = () => {
+    clear(info);
+    const p = periods.find((x) => x.kind === kind);
+    info.append(p.hint);
+    if (!closed(sel.value)) return;
+    const months = kind === 'month' ? [sel.value] : p.months.filter(closed);
+    info.append(
+      h('div', { class: 'closed-note' }, `🔒 ${kind === 'month' ? 'الشهر' : 'الفترة'} مقفول${kind === 'month' ? '' : 'ة'} — لن يُقبل القيد إلا بعد الفتح. `),
+      h('button', {
+        type: 'button',
+        class: 'btn small',
+        text: 'فتح للإضافة',
+        onclick: async () => {
+          const reason = await confirmDialog({ title: 'فتح للإضافة', message: 'بعد الإضافة يمكنك إقفالها مرة أخرى من شاشة الشهور.', okText: 'فتح', input: { label: 'السبب', required: true, value: 'إضافة قيد متأخر' } });
+          if (!reason) return;
+          await ctx.store.run((b) => b.dispatchAll(months.map((mo) => ['month.reopen', { scope, month: mo, reason }])));
+          build(sel.value);
+          toast('تم الفتح');
+        },
+      }),
+    );
+  };
+  const build = (keep) => {
+    const p = periods.find((x) => x.kind === kind);
+    const def = keep && p.months.includes(keep) ? keep : kind === 'month' && p.months.includes(ymOf(d.value)) ? ymOf(d.value) : p.months[p.months.length - 1];
+    sel = selectInput(p.months.slice().reverse().map((mo) => ({ value: mo, label: `${F.month(mo)}${closed(mo) ? ' 🔒' : ''}` })), def);
+    sel.setAttribute('aria-label', 'الشهر');
+    sel.addEventListener('change', () => {
+      touched = true;
+      status();
+      onTarget?.(sel.value);
+    });
+    clear(selBox);
+    selBox.append(sel);
+    status();
+    onTarget?.(sel.value);
+  };
+  const kinds = chips(periods.map((p) => ({ value: p.kind, label: p.short })), kind, (v) => {
+    kind = v;
+    touched = true;
+    build();
   });
-  return { d, m, fields: [field('التاريخ الفعلي', d), field('على حساب شهر', m, 'الشهر الذي يدخل فيه القيد عند التسوية (قد يختلف عن التاريخ الفعلي)')] };
+  d.addEventListener('change', () => {
+    const k = kindOf(ymOf(d.value));
+    if (touched || !k || !d.value) return;
+    kind = k;
+    kinds.querySelectorAll('.chip').forEach((b, i) => b.classList.toggle('on', periods[i].kind === k));
+    build(ymOf(d.value));
+  });
+  build(month || ymOf(d.value));
+  const box = h('div', { class: 'target' }, kinds, selBox, info);
+  return { d, m: { get value() { return sel.value; } }, fields: [field(dateLabel, d), h('div', { class: 'field' }, h('label', { text: 'الحساب على' }), box)] };
 }
 
 // سطر «كمية × سعر = مبلغ» مع حساب تلقائي، أو مبلغ إجمالي فقط.
@@ -242,7 +316,7 @@ export function expenseForm(cycleId, { month = null, entry = null } = {}) {
   openSheet(entry ? 'تعديل مصروف' : 'مصروف', (body, close) => {
     const err = errorBox();
     const cat = selectInput(cats().map((x) => ({ value: x.id, label: x.name })), entry?.category || 'feed');
-    const dm = dateMonth(entry?.date, entry?.month || month);
+    const dm = dateTarget(cycleId, entry?.date, entry?.month || month);
     const qpBox = h('div', {});
     let qp;
     const build = () => {
@@ -286,7 +360,7 @@ export function saleForm(cycleId, { month = null, entry = null, product = 'eggs'
     const err = errorBox();
     let prod = entry?.product || product;
     const box = h('div', {});
-    const dm = dateMonth(entry?.date, entry?.month || month);
+    const dm = dateTarget(cycleId, entry?.date, entry?.month || month);
     const note = textArea(entry?.note || '');
     let reader = null;
     const same = (p) => (entry && entry.product === p ? entry : {});
@@ -420,7 +494,7 @@ export function paymentForm(cycleId, { entry = null, type = null, personId = nul
 export function logForm(cycleId, { entry = null, month = null } = {}) {
   openSheet(entry ? 'تعديل' : 'نافق / إنتاج / حدث', (body, close) => {
     const err = errorBox();
-    const dm = dateMonth(entry?.date, entry?.month || month);
+    const dm = dateTarget(cycleId, entry?.date, entry?.month || month);
     const deaths = intInput(entry?.deaths ?? '');
     const trays = qtyInput(entry?.trays ?? null);
     const note = textArea(entry?.note || '', 'مثال: مرض تنفسي، كشف بيطري…');
@@ -509,16 +583,21 @@ export function countForm(cycleId, { entry = null, item = 'birds' } = {}) {
 
 // ---------- إدخال شهر كامل (زي جدول الإكسيل) ----------
 export function monthBatchForm(cycleId, { month = null } = {}) {
-  openSheet('إدخال حسابات شهر', (body, close) => {
+  openSheet('إدخال حسابات شهر أو فترة', (body, close) => {
     const err = errorBox();
-    const m = monthSelect(month || ctx.nowMonth());
     const defDate = (ym) => (lastDayOf(ym) < ctx.today() ? lastDayOf(ym) : ctx.today());
-    const date = dateInput(defDate(m.value));
     let dateTouched = false;
-    date.addEventListener('change', () => (dateTouched = true));
-    m.addEventListener('change', () => {
-      if (!dateTouched) date.value = defDate(m.value);
+    let date = null;
+    const tgt = dateTarget(cycleId, null, month || null, {
+      dateLabel: 'تاريخ التسجيل',
+      onTarget: (ym) => {
+        if (date && !dateTouched) date.value = defDate(ym);
+      },
     });
+    date = tgt.d;
+    date.value = defDate(tgt.m.value);
+    date.addEventListener('change', () => (dateTouched = true));
+    const m = tgt.m;
     const salesBox = h('div', { class: 'lines' });
     const expBox = h('div', { class: 'lines' });
     const summary = h('div', { class: 'line-summary' });
@@ -579,8 +658,8 @@ export function monthBatchForm(cycleId, { month = null } = {}) {
     recalc();
     body.append(
       err,
-      h('p', { class: 'muted small', text: 'سجّل كل مبيعات ومصروفات الشهر مرة واحدة. لكل سطر: العدد/الكمية × السعر، أو المبلغ فقط. الأسطر الفارغة تُتجاهل.' }),
-      h('div', { class: 'grid2' }, field('على حساب شهر', m), field('تاريخ التسجيل', date)),
+      h('p', { class: 'muted small', text: 'سجّل كل مبيعات ومصروفات شهر (أو فترة التأسيس أو البشاير) مرة واحدة. لكل سطر: العدد/الكمية × السعر، أو المبلغ فقط. الأسطر الفارغة تُتجاهل.' }),
+      ...tgt.fields,
       h('h3', { class: 'section-title', text: 'المبيعات' }),
       salesBox,
       h('button', { type: 'button', class: 'btn small', text: '+ سطر بيع', onclick: () => addSale() }),
