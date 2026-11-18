@@ -302,6 +302,8 @@ export function buildImport(extracted, config = {}) {
   return { book: b, parsed: p, report, cycleId, layExp, oursTotal };
 }
 
+const layBlockSales = (parsed) => (parsed.blocks[0] ? parsed.blocks[0].sales.reduce((a, x) => a + x.count * x.price, 0) : 0);
+
 // مقارنة بأرقام الإكسيل نفسه.
 export function reconcile(extracted, config = {}) {
   const { book, parsed, cycleId, layExp, oursTotal } = buildImport(extracted, config);
@@ -317,8 +319,10 @@ export function reconcile(extracted, config = {}) {
     if (Number.isFinite(blk.result)) add(`نصيب ناحيتي ${blk.month}`, mine / MONEY, blk.result);
   }
   add('دفعاتي للمدير', d.people.get('me').paidCycle / MONEY, parsed.payments.reduce((s, x) => s + x, 0));
-  add('رأس المال (نصيبنا) = دفعات التربية − فترة البشاير', d.totals.capExpenses / MONEY, (oursTotal - layExp) / MONEY, parsed.batches.reduce((s, bt) => s + bt.items.length, 0) * 0.01);
-  if (config.subPaid && parsed.subShare) add('دفعة الشريك التابع = نصيبه من رأس المال', config.subPaid, ((oursTotal - layExp) / MONEY) * parsed.subShare, 5);
+  const tol = parsed.batches.reduce((s, bt) => s + bt.items.length, 0) * 0.01;
+  add('التربية (نصيبنا) = دفعات التربية − فترة البشاير', -d.totals.rearing.net / MONEY, (oursTotal - layExp) / MONEY, tol);
+  add('التأسيس = التربية + صافي البشاير = كل دفعات التربية', d.totals.establishment / MONEY, oursTotal / MONEY - (layBlockSales(parsed) || 0), tol);
+  if (config.subPaid && parsed.subShare) add('دفعة الشريك التابع = نصيبه من التربية قبل البشاير', config.subPaid, ((oursTotal - layExp) / MONEY) * parsed.subShare, 5);
   return { checks, d, parsed };
 }
 
@@ -336,7 +340,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   mkdirSync(join(ROOT, 'output'), { recursive: true });
   const doc = exportDoc(book.events, { now: NOW, note: 'استيراد من الإكسيل' });
   writeFileSync(join(ROOT, 'output/personal-assistant-import.json'), JSON.stringify(doc));
-  const lines = ['# تقرير استيراد الإكسيل', '', ...report.map((x) => `- ${x}`), '', '## المطابقة مع أرقام الإكسيل', '', '| البند | التطبيق | الإكسيل | |', '|---|---:|---:|---|', ...checks.map((c) => `| ${c.label} | ${c.app.toFixed(2)} | ${c.excel.toFixed(2)} | ${c.ok ? '✓' : '✗'} |`), '', `رأس المال (نصيبنا): ${(d.totals.capExpenses / MONEY).toFixed(2)} · صافي الدورة: ${(d.totals.net / MONEY).toFixed(2)} · رصيد ناحيتي: ${(d.people.get('me').sideBalance / MONEY).toFixed(2)}`];
+  const lines = ['# تقرير استيراد الإكسيل', '', ...report.map((x) => `- ${x}`), '', '## المطابقة مع أرقام الإكسيل', '', '| البند | التطبيق | الإكسيل | |', '|---|---:|---:|---|', ...checks.map((c) => `| ${c.label} | ${c.app.toFixed(2)} | ${c.excel.toFixed(2)} | ${c.ok ? '✓' : '✗'} |`), '', `التأسيس (نصيبنا): ${(d.totals.establishment / MONEY).toFixed(2)} · صافي الدورة: ${(d.totals.net / MONEY).toFixed(2)} · رصيد ناحيتي: ${(d.people.get('me').sideBalance / MONEY).toFixed(2)}`];
   writeFileSync(join(ROOT, 'output/import-report.md'), lines.join('\n') + '\n');
   console.log(lines.join('\n'));
 }

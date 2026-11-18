@@ -152,7 +152,7 @@ test('تغيير الحصص من شهر لاحق لا يمس الشهور الس
   assert.equal(dec.alloc.length, 2);
 });
 
-test('فترة البشاير: من شهر البشاير حتى أول شهر منتظم، ليست رأس مال ولا تدخل متوسط الشهور المنتظمة', async () => {
+test('فترة البشاير: من شهر البشاير حتى أول شهر منتظم، صافيها يُضاف للتأسيس ولا تدخل متوسط الشهور المنتظمة', async () => {
   const { aggregateMonths } = await import('../../app/src/core/modules/poultry/calc.js');
   const b = demoBook({ settleFrom: '2025-11' });
   b.upsert('poultry.cycle', { id: 'c1', layStart: '2025-09-10' }, opts);
@@ -170,17 +170,54 @@ test('فترة البشاير: من شهر البشاير حتى أول شهر �
   assert.equal(m['2025-09'].phase, 'lay');
   assert.equal(m['2025-10'].phase, 'lay');
   assert.equal(m['2025-11'].phase, 'regular');
-  assert.equal(d.totals.capExpenses, 60000);
+  assert.equal(d.totals.capExpenses, 60000 + 36000);
   assert.deepEqual([d.totals.lay.from, d.totals.lay.to, d.totals.lay.net], ['2025-09', '2025-10', 10000 - 36000]);
+  assert.equal(d.totals.establishment, 60000 + 26000);
   assert.equal(d.totals.regular.net, 30000);
   assert.equal(d.kpis.avgMonthlyNet, 30000);
   assert.equal(d.totals.net, -60000 - 26000 + 30000);
   const agg = aggregateMonths([m['2025-09'], m['2025-10']]);
-  assert.equal(agg.opNet, -26000);
-  assert.equal(agg.alloc.reduce((s, a) => s + a.op, 0), -26000);
+  assert.equal(agg.capNet, -26000);
+  assert.equal(agg.alloc.reduce((s, a) => s + a.cap, 0), -26000);
   const me = personStatement(d, 'me');
   assert.ok(me.some((l) => l.kind === 'lay'));
   // تغيير شهر البشاير ممنوع بعد إقفال شهر يتأثر به
   b.dispatch('month.close', { scope: 'poultry:c1', month: '2025-10', totals: {} }, opts);
   assert.throws(() => b.upsert('poultry.cycle', { id: 'c1', layStart: '2025-10-01' }, opts), /البشاير/);
+});
+
+test('التصفية: تسجيل دفعات الخطة يجعل كل الأرصدة صفراً عدا المدير، والدفعات الحرة قبلها مسموحة', async () => {
+  const { settlementPlan } = await import('../../app/src/core/modules/poultry/calc.js');
+  const b = scenario();
+  // استلمت من المدير أكثر من نصيبي وأعطيت التابع مبلغاً لا يناسب نسبته
+  b.addEntries([pay('c1', '2025-12-15', 'cycle', 'me', 77777), pay('c1', '2025-12-16', 'me', 'sub', 33333)], opts);
+  const plan = settlementPlan(computeCycle(b.state, 'c1', '2025-12-31'));
+  assert.ok(plan.transfers.length >= 2);
+  b.addEntries(plan.transfers.map((t) => pay('c1', '2025-12-31', t.from, t.to, t.amount)), opts);
+  const d = computeCycle(b.state, 'c1', '2025-12-31');
+  for (const p of d.people.values()) {
+    if (p.personId !== 'mgr') assert.equal(p.sideBalance, 0, p.personId);
+    for (const w of p.withHeads) assert.equal(w.balance, 0, `${p.personId}→${w.head}`);
+  }
+  assert.equal(d.cash.pool, d.people.get('mgr').sideBalance);
+  assert.equal(settlementPlan(d).transfers.length, 0);
+});
+
+test('التأسيس = صافي التربية + صافي البشاير (مثال: 100 ثم بشاير صرف 40 ودخل 20 ⇒ 120)', () => {
+  const b = demoBook({ settleFrom: '2025-11' });
+  b.upsert('poultry.cycle', { id: 'c1', layStart: '2025-09-01' }, opts);
+  b.addEntries([
+    exp('c1', '2025-06-01', '2025-06', 'feed', 100000),
+    exp('c1', '2025-09-10', '2025-09', 'feed', 25000),
+    exp('c1', '2025-10-10', '2025-10', 'vet', 15000),
+    eggs('c1', '2025-10-20', '2025-10', 200, 100),
+    eggs('c1', '2025-11-20', '2025-11', 500, 100),
+    exp('c1', '2025-11-20', '2025-11', 'feed', 20000),
+  ], opts);
+  const d = computeCycle(b.state, 'c1', '2025-11-30');
+  assert.equal(d.totals.establishment, 120000);
+  assert.equal(d.kpis.capital, 120000);
+  assert.equal(d.totals.regular.net, 30000);
+  assert.equal(d.totals.opNet, 30000);
+  assert.equal(d.kpis.avgMonthlyNet, 30000);
 });

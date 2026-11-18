@@ -398,7 +398,7 @@ export function paymentForm(cycleId, { entry = null, type = null, personId = nul
       err,
       types,
       box,
-      field('المبلغ', amount),
+      field('المبلغ', amount, 'أي مبلغ — لا يلزم أن يساوي النصيب؛ الفرق يظهر في الرصيد ويُسوّى في التصفية'),
       field('التاريخ', date),
       field('ملاحظة', note),
       saveButton(
@@ -653,7 +653,7 @@ export async function toggleMonthClose(cycleId, r) {
     toast('تم الفتح');
     return;
   }
-  const ok = await confirmDialog({ title: `إقفال ${label}`, message: `بعد الإقفال لا يُضاف ولا يُعدَّل أي قيد على حسابها.\nالمبيعات ${F.money(r.sales)} · المصروفات ${F.money(r.expensesOurs)} · الصافي ${F.money(r.opNet + r.capNet)}`, okText: 'إقفال' });
+  const ok = await confirmDialog({ title: `إقفال ${label}`, message: `الإقفال للحسابات فقط: لا يُضاف ولا يُعدَّل بيع أو مصروف على حسابها. الدفعات والاستلام تُسجَّل في أي وقت.\nالمبيعات ${F.money(r.sales)} · المصروفات ${F.money(r.expensesOurs)} · الصافي ${F.money(r.opNet + r.capNet)}`, okText: 'إقفال' });
   if (!ok) return;
   const closed = new Set(ctx.state.closed.get(scope)?.keys() || []);
   const data = cycleData(ctx.state, cycleId);
@@ -668,6 +668,15 @@ export async function toggleMonthClose(cycleId, r) {
     ),
   );
   toast('تم الإقفال');
+}
+
+// تسجيل التصفية: دفعة لكل سطر من الخطة بتاريخ اليوم.
+export async function recordSettlement(cycleId, plan) {
+  const ok = await confirmDialog({ title: 'تسجيل التصفية', message: `سيُسجَّل ${plan.transfers.length} دفعة بتاريخ اليوم فتصبح كل الأرصدة صفراً. يمكن إلغاء أي منها لاحقاً.`, okText: 'تسجيل' });
+  if (!ok) return;
+  const date = ctx.today();
+  await ctx.store.run((b) => b.addEntries(plan.transfers.map((t) => ({ kind: 'poultry.payment', cycleId, date, from: t.from, to: t.to, amount: t.amount, note: 'تصفية' }))));
+  toast('تم تسجيل التصفية');
 }
 
 export { formatShare };

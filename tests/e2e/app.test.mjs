@@ -84,8 +84,14 @@ test('دورة كاملة: إنشاء، حصص، إدخال شهر، دفعة، 
       await go(page, `#/poultry/cycle/${id}/${tab}`);
       assert.equal(await page.locator('.banner.bad').count(), 0, tab);
     }
+    // التصفية: تسجيلها يجعل الأرصدة صفراً
+    await go(page, `#/poultry/cycle/${id}/settle`);
+    assert.match(await page.locator('#screen').innerText(), /يدفع/);
+    await page.getByRole('button', { name: 'تسجيل التصفية كدفعات' }).click();
+    await page.locator('.dialog').getByRole('button', { name: 'تسجيل' }).click();
+    await page.waitForSelector('text=كل الحسابات مسوّاة');
     await go(page, '#/finance');
-    assert.match(await page.locator('#screen').innerText(), /رصيد ناحيتي/);
+    assert.match(await page.locator('#screen').innerText(), /لا توجد أرصدة|وضعي المالي/);
     await go(page, '#/');
     assert.match(await page.locator('#screen').innerText(), /دورة-اختبار/);
     assert.deepEqual(t.errors, []);
