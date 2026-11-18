@@ -18,7 +18,7 @@ test('دورة كاملة: إنشاء، حصص، إدخال شهر، دفعة، 
     await go(page, `#/poultry/cycle/${id}`);
     await page.getByRole('button', { name: 'إدخال شهر' }).click();
     const b = sheet(page);
-    await b.getByLabel('على حساب شهر').selectOption('2025-11');
+    await b.getByLabel('الشهر', { exact: true }).selectOption('2025-11');
     const sales = b.locator('.lines').nth(0);
     await sales.locator('.line').first().locator('input').nth(0).fill('600');
     await sales.locator('.line').first().locator('input').nth(1).fill('110');
@@ -137,6 +137,57 @@ test('إخفاء الأرصدة بضغطة وإظهارها', async () => {
     await page.locator('#privacy-toggle').click();
     await page.waitForFunction(() => !document.querySelector('.stat .value').textContent.includes('•'));
     assert.match(await page.locator('.stat .value').first().innerText(), /\d/);
+  } finally {
+    await t.close();
+  }
+});
+
+test('إضافة بيع أو شراء على فترة التأسيس أو البشاير أو شهر محدد، مع فتح الفترة المقفولة', async () => {
+  const t = await launch();
+  const { page } = t;
+  try {
+    await openApp(page, t.url);
+    const id = await createCycle(page, { name: 'دورة-فترات', settle: '2025-11' });
+    await page.evaluate((cid) => window.__pa.store.run((b) => b.upsert('poultry.cycle', { id: cid, layStart: '2025-10-01' })), id);
+    await go(page, `#/poultry/cycle/${id}`);
+    // شراء على فترة التأسيس (شهر أغسطس)
+    await page.getByRole('button', { name: 'شراء/مصروف' }).click();
+    let s = sheet(page);
+    await s.getByRole('tab', { name: 'التأسيس' }).click();
+    await s.getByLabel('الشهر', { exact: true }).selectOption('2025-08');
+    await s.getByLabel('المبلغ').fill('6000');
+    await s.getByRole('button', { name: 'حفظ' }).click();
+    await page.waitForFunction(() => !document.querySelector('.sheet'));
+    // بيع على فترة البشاير
+    await page.getByRole('button', { name: 'بيع' }).first().click();
+    s = sheet(page);
+    await s.getByRole('tab', { name: 'البشاير' }).click();
+    await s.getByLabel('عدد الأطباق').fill('10');
+    await s.getByLabel('سعر الطبق').fill('100');
+    await s.getByRole('button', { name: 'حفظ' }).click();
+    await page.waitForFunction(() => !document.querySelector('.sheet'));
+    const d = await page.evaluate((cid) => {
+      const st = window.__pa.store.state;
+      return st.entries.filter((e) => e.cycleId === cid && (e.kind === 'poultry.expense' || e.kind === 'poultry.sale')).map((e) => [e.kind, e.month]);
+    }, id);
+    assert.deepEqual(d.sort(), [['poultry.expense', '2025-08'], ['poultry.sale', '2025-10']]);
+    await go(page, `#/poultry/cycle/${id}/summary`);
+    assert.match(await page.locator('#screen').innerText(), /إجمالي التأسيس[\s\S]*5,000/); // 6000 تربية − 1000 بشاير
+    // إقفال فترة البشاير ثم الإضافة عليها بعد فتحها من النموذج
+    await go(page, `#/poultry/cycle/${id}/period/2025-10/2025-10`);
+    await page.getByRole('button', { name: /إقفال/ }).click();
+    await page.locator('.dialog').getByRole('button', { name: 'إقفال' }).click();
+    await go(page, `#/poultry/cycle/${id}`);
+    await page.getByRole('button', { name: 'شراء/مصروف' }).click();
+    s = sheet(page);
+    await s.getByRole('tab', { name: 'البشاير' }).click();
+    await s.locator('.closed-note').waitFor();
+    await s.getByRole('button', { name: 'فتح للإضافة' }).click();
+    await page.locator('.dialog').getByRole('button', { name: 'فتح' }).click();
+    await s.getByLabel('المبلغ').fill('500');
+    await s.getByRole('button', { name: 'حفظ' }).click();
+    await page.waitForFunction(() => !document.querySelector('.sheet'));
+    assert.deepEqual(t.errors, []);
   } finally {
     await t.close();
   }

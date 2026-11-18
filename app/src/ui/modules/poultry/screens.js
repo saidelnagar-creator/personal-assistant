@@ -77,7 +77,7 @@ function actions(c, month = null) {
     { class: 'actions' },
     h('button', { class: 'action primary', onclick: () => monthBatchForm(c.id, { month }) }, h('span', { class: 'emo', text: '🗓️' }), 'إدخال شهر'),
     h('button', { class: 'action', onclick: () => saleForm(c.id, { month }) }, h('span', { class: 'emo', text: '🥚' }), 'بيع'),
-    h('button', { class: 'action', onclick: () => expenseForm(c.id, { month }) }, h('span', { class: 'emo', text: '🧾' }), 'مصروف'),
+    h('button', { class: 'action', onclick: () => expenseForm(c.id, { month }) }, h('span', { class: 'emo', text: '🧾' }), 'شراء/مصروف'),
     h('button', { class: 'action', onclick: () => paymentForm(c.id) }, h('span', { class: 'emo', text: '💵' }), 'دفعة'),
     h('button', { class: 'action', onclick: () => logForm(c.id, { month }) }, h('span', { class: 'emo', text: '🐔' }), 'نافق/إنتاج'),
     h('button', { class: 'action', onclick: () => countForm(c.id) }, h('span', { class: 'emo', text: '📋' }), 'جرد'),

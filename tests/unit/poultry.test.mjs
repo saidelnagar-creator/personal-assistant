@@ -221,3 +221,17 @@ test('التأسيس = صافي التربية + صافي البشاير (مثا
   assert.equal(d.totals.opNet, 30000);
   assert.equal(d.kpis.avgMonthlyNet, 30000);
 });
+
+test('قيد متأخر على حساب فترة التأسيس: يتحمّل الضيف نسبته حسب شهر الحساب لا تاريخ التسجيل', async () => {
+  const { guestDate } = await import('../../app/src/core/modules/poultry/calc.js');
+  assert.equal(guestDate({ date: '2026-11-18', month: '2025-06' }), '2025-06-30');
+  assert.equal(guestDate({ date: '2025-09-27', month: '2025-10' }), '2025-10-01');
+  assert.equal(guestDate({ date: '2025-10-05', month: '2025-10' }), '2025-10-05');
+  const b = demoBook();
+  b.addEntry({ kind: 'poultry.guest', cycleId: 'c1', date: '2025-05-05', personId: 'gst', guestBirds: 5000, totalBirds: 10000 }, opts);
+  b.addEntry({ kind: 'poultry.guest', cycleId: 'c1', date: '2025-08-01', personId: 'gst', guestBirds: 0, totalBirds: 5000 }, opts);
+  b.addEntry(exp('c1', '2025-12-20', '2025-06', 'vet', 8000), opts); // سُجّل في ديسمبر على حساب يونيو
+  const d = computeCycle(b.state, 'c1', '2025-12-20');
+  assert.equal(d.people.get('gst').guestCost, 4000);
+  assert.equal(d.totals.capExpenses, 4000);
+});

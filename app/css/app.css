@@ -1259,3 +1259,15 @@ h3.section-title {
   opacity: 0.75;
   margin-inline-start: 4px;
 }
+
+.target .chips {
+  margin-bottom: 6px;
+}
+.target select {
+  width: 100%;
+}
+.closed-note {
+  color: var(--warn);
+  font-weight: 700;
+  margin: 6px 0;
+}
