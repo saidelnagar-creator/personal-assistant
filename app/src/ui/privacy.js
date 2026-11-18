@@ -6,6 +6,7 @@ export const PRIVACY_GROUPS = Object.freeze({
   home: 'أرقام الرئيسية',
   poultry: 'الدواجن',
   car: 'العربية',
+  money: 'السلف والجمعيات والأمانات',
   people: 'الأشخاص والأرصدة',
   finance: 'وضعي المالي',
   entries: 'الحركات',

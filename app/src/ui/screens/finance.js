@@ -22,13 +22,13 @@ export function financeScreen() {
   for (const kind of Object.keys(FIN_KINDS)) {
     const items = fin.items.filter((it) => it.kind === kind);
     if (!items.length) continue;
-    body.append(sectionTitle(`${FIN_KINDS[kind]} — ${F.money(fin.totals[kind])}`), list(items.map((it) => row({ title: it.label, subtitle: it.section, value: F.money(it.amount), valueClass: kind === 'payable' ? 'neg' : 'pos', onclick: it.href ? () => ctx.nav(it.href) : null }))));
+    body.append(sectionTitle(`${FIN_KINDS[kind]} — ${F.money(fin.totals[kind])}`), list(items.map((it) => row({ title: it.label, subtitle: it.section, value: F.money(it.amount), valueClass: kind === 'payable' ? 'neg' : kind === 'held' ? '' : 'pos', cls: 'wrap', onclick: it.href ? () => ctx.nav(it.href) : null }))));
   }
   if (!fin.items.length) body.append(empty('لا توجد أرصدة بعد'));
   body.append(
     h('p', {
       class: 'muted small',
-      text: 'الآن: أرصدة دورات الدواجن (ما يدين به المدير لناحيتك، وما تدين به لشركائك التابعين)، وقيمة العربية التقديرية لو كتبتها في إعدادها. في المرحلة الثانية: السيولة (كاش، بنك، محافظ)، السلف التي لك والتي عليك بتواريخها، الأمانات، الجمعيات، الممتلكات القابلة للبيع بسعرها التقديري، والدخل المتوقع (إيجار، جمعية، أرباح).',
+      text: 'الآن: أرصدة دورات الدواجن، قيمة العربية التقديرية، السلف اللي ليّ واللي عليّ (الذهب والعملات بآخر سعر في «الأسعار»)، الجمعيات (دفعت ولسه مقبضتش = ليّ، قبضت وباقي أقساط = عليّ، وسهم حد تاني = رصيده معايا)، وأماناتي عند الناس. أمانات الناس اللي عندي ظاهرة للعلم بس ومش داخلة في الصافي. لسه: السيولة (كاش، بنك، محافظ) والممتلكات.',
     }),
   );
   return { title: 'وضعي المالي', root: true, body };

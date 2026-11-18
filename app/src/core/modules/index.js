@@ -3,6 +3,9 @@
 import common from './common.js';
 import poultry from './poultry/index.js';
 import car from './car/index.js';
+import loans from './loans/index.js';
+import assoc from './assoc/index.js';
+import trusts from './trusts/index.js';
 
-export const MODULES = [common, poultry, car];
+export const MODULES = [common, poultry, car, loans, assoc, trusts];
 export const moduleById = (id) => MODULES.find((m) => m.id === id) || null;

@@ -1,6 +1,6 @@
 # مساعدي — دليل المطوّر (اقرأه قبل أي تعديل)
 
-PWA عربي RTL شخصي لمتابعة المشروعات والأموال: دواجن (المرحلة 1)، العربية (الصيانة والأعطال)، ثم السلف والأمانات والممتلكات، الأرض والنخل، المنحل.
+PWA عربي RTL شخصي لمتابعة المشروعات والأموال: دواجن (المرحلة 1)، العربية (الصيانة والأعطال)، السلف والجمعيات والأمانات، ثم السيولة والممتلكات، الأرض والنخل، المنحل.
 يعمل أوفلاين على iPhone، بلا backend، والبيانات في IndexedDB على الجهاز فقط. بلا خطوة بناء: ملفات `app/` تُنشر كما هي (ES modules).
 
 ## الأوامر
@@ -32,12 +32,18 @@ app/                        كل ما يُنشر (لا شيء غيره)
     modules/common.js       الأشخاص، المجموعات، التذكيرات اليدوية
     modules/poultry/        index.js (الأنواع والتحقق والوصف والتذكيرات والمالية)، calc.js (التسوية والأرصدة والمؤشرات)، config.js
     modules/car/            index.js (العربية، بنود الجدول، الأعطال، التعديلات، العداد، الشغل)، calc.js (آخر مرة والموعد الجاي، متوسط المشي، التكاليف)، schedule.js (جدول الصيانة الافتراضي)، config.js
+    modules/money/          مشترك: config.js (العملات، العيارات، القوائم)، units.js (الوحدات والقيمة)، prices.js (السعر في تاريخ، مستوى التذكير)
+    modules/loans/          index.js (السلفة، الأخذ، السداد، التحويل، الأسعار)، calc.js (الحركات، الباقي، القيمة، جدول الأقساط)
+    modules/assoc/          index.js (الجمعية وأسهمها، القسط، القبض، فلوس صاحب سهم)، calc.js (الشهور، القبض، الأرصدة، الفلوس مع المدير)
+    modules/trusts/         index.js (الأمانة وحاجاتها، الترجيع)، calc.js (الباقي، الوزن، القيمة)
     backup.js crypto-backup.js drive.js money.js util.js sha256.js migrations/
   src/storage/              store.js (فتح، ترحيل آمن، snapshots، استيراد)، idb.js، mirror.js، drive-sync.js
   src/ui/                   app.js (المسارات، القفل)، components.js، forms-common.js، widgets.js، privacy.js، screens/
     modules/index.js        سجل وحدات الواجهة ← أضف الوحدة هنا
     modules/poultry/        screens.js، forms.js، index.js (المسارات، بطاقة الرئيسية، أرصدة الشخص، تحرير القيود)
     modules/car/            screens.js، forms.js، fmt.js، index.js (+ entryDetails/entrySubtitle لشاشة القيد)
+    modules/money/          fmt.js (الكمية بوحدتها بعزل الاتجاه، حقل الكمية حسب الوحدة)، plan.js (محرر الأقساط)، prices.js (شاشة ونموذج الأسعار)
+    modules/{loans,assoc,trusts}/  index.js، screens.js، forms.js (+ canEdit لإخفاء «تعديل» لقيد لا يُعدَّل)
 tests/unit tests/e2e tests/reconcile tests/fixtures (بيانات وهمية فقط)
 tools/                      serve، gen-sw-assets، make-icons، excel_extract.py، import-excel.mjs، build-site
 docs/                       USER_GUIDE، EXTENDING، INSTALL_IPHONE، DEPLOY، SECURITY، ASSUMPTIONS، ROADMAP، CHANGELOG
@@ -78,9 +84,20 @@ input/ output/              بيانات حقيقية — خارج git دائم�
 - حالة «اتصلح»/«اتعمل» للعطل والتعديل **مشتقة** من `faultIds`/`planIds` في الشغل الساري — لا تُخزَّن.
 - الكيلومترات ليست أرصدة: العداد ومتوسط المشي يُعرضان بلا إخفاء (`plainStat` و`kv` بـ `secret: false`)، والمبالغ كلها بمجموعة الخصوصية `car`.
 
+## السلف والجمعيات والأمانات (`modules/loans`، `assoc`، `trusts`، والمشترك `money`)
+
+- **الوحدات** (`money/units.js`): `EGP` وعملات (`USD`…) ×100، ذهب بالجرام `g24/g21/g18` وجنيهات ذهب `gpound` وحاجة `item` ×1000. القيمة بالجنيه = `valueOf(qty, unit, price)` والسعر بالقرش لكل وحدة. لا تغيّر أكواد الوحدات (مخزّنة).
+- **الأسعار** قيود `money.price {date, prices}` يكتبها المستخدم (لا اتصال خارجي). السعر في تاريخ = آخر قيد ساري ≤ التاريخ فيه المفتاح (`priceAt`). الاشتقاق من عيار 21 في الواجهة فقط (`deriveGold`).
+- **السلفة** كيان `loan {dir: out|in, personId, unit, itemName?, plan}`؛ الحركات: `loan.draw` (+)، `loan.pay` (− ومنها `forgive`)، `loan.convert` (− من القديمة و+ في الجديدة، قيد واحد). **الباقي لا يصبح سالباً في أي يوم** (`firstNegative`)، والسداد بنفس النوع. السلفة المحوّلة مقفولة لأي قيد أو إلغاء حتى يُلغى التحويل. النوع والاتجاه ثابتان بعد أول حركة.
+- **الخطة** `plan: once {due} | schedule {items[{due, qty}]} | open`، و`base` = المسدد قبل الخطة (جدول جديد للباقي). المسدد يغطي الأقساط الأقدم أولاً؛ الجدول مقصوص على المأخوذ.
+- **الجمعية** `assoc {organizerId, monthly, months, start, payDay, shares[{id, ownerId, size{num,den}, turn?, payouts[{month, amount}]}]}`. إجمالي السهم = `mulDiv(monthly, num, den) × months` = مجموع `payouts` (لو موجودة). القيود: `assoc.pay` و`assoc.payout` (لا يتعديان إجمالي السهم)، و`assoc.transfer {dir}` لسهم حد تاني في جمعية أنا مش مديرها. `organizerId === 'me'` = مدير. السهم اللي عليه حركات لا يُشال.
+- **الأمانة** `trust {dir: held|placed, personId, date, items[]}`، والترجيع `trust.return {items[{itemId, count|amount}]}` لا يتعدى الباقي. `held` تظهر في «وضعي المالي» بنوع `held` (خارج الصافي)، و`placed` = `receivable`.
+- **التذكير** قبل الميعاد بـ `settings['money.remindDays']` (الافتراضي 7، `remindDaysOf`)؛ وتنبيه الأسعار لو سعر مفتاح مستخدم أقدم من `MONEY_RULES.priceStaleDays`.
+- **العرض**: الكمية بوحدتها عبر `uq`/`egp` في `ui/modules/money/fmt.js` (تعزل الرقم LTR والوحدة RTL داخل خانات الأرقام). الاختبارات النصية تشيل علامات العزل (U+2066–2069).
+
 ## ما لا يجوز كسره
 
-- **الثوابت** (`tests/unit/property.test.mjs`): مجموع التوزيع = صافي كل شهر؛ النقدية المحسوبة مع المدير = مجموع أرصدة النواحي والضيوف؛ مجموع الأرصدة الشخصية = مجموع النواحي؛ إجمالي شغل العربية = بنوده وتكاليفها = مجموع الشغل الساري والعداد لا يرجع؛ إعادة البناء من السجل تعطي نفس النتيجة.
+- **الثوابت** (`tests/unit/property.test.mjs`): مجموع التوزيع = صافي كل شهر؛ النقدية المحسوبة مع المدير = مجموع أرصدة النواحي والضيوف؛ مجموع الأرصدة الشخصية = مجموع النواحي؛ إجمالي شغل العربية = بنوده وتكاليفها = مجموع الشغل الساري والعداد لا يرجع؛ باقي السلفة = المأخوذ − المسدد ولا يصبح سالباً في أي يوم؛ مجموع أرصدة أسهم الجمعية = الفلوس مع المدير ولا سهم يتعدى إجماليه؛ إعادة البناء من السجل تعطي نفس النتيجة.
 - **فصل الكود عن البيانات:** `DB_NAME` وأسماء المخازن ثابتة. `sw.js` لا يلمس IndexedDB. كاش الأصول يبدأ بـ `pa-assets-` ولا يبدأ به أي كاش آخر (المرآة `pa-mirror-v1`). كل مفاتيح localStorage تبدأ بـ `KEY_PREFIX` (التطبيق قد يشارك نطاق github.io مع تطبيقات أخرى).
 - **لا تحذف وحدة ولا نوع كيان/قيد له بيانات منشورة**، ولا تغيّر معنى حقل مخزَّن. تغيير المعنى = ترحيل جديد في `core/migrations/` (لا تعدّل ترحيلاً منشوراً).
 - **لا بيانات حقيقية في git:** لا أسماء ولا أرقام من الإكسيل في الكود أو الاختبارات أو التوثيق. `input/` و`output/` في `.gitignore`. `sw-assets.test.mjs` يفحص الأسماء (كلمة كاملة) إن وُجدت البيانات محلياً. الاختبارات ببيانات وهمية فقط.

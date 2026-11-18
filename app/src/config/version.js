@@ -1,5 +1,5 @@
 // إصدار الكود (يتغير مع كل نشر) — مستقل تماماً عن إصدار هيكل البيانات (SCHEMA_VERSION في core/migrations).
-export const APP_VERSION = '0.2.0';
+export const APP_VERSION = '0.3.0';
 export const APP_ID = 'personal-assistant';
 export const APP_NAME = 'مساعدي';
 // اسم قاعدة البيانات ثابت للأبد: تغييره = بيانات فارغة. لا تغيّره.
