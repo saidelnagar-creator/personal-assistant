@@ -14,8 +14,9 @@ test('المستورد يقرأ البنية ويصحح سنة الشهر ويس
   const d = computeCycle(book.state, cycleId, '2025-07-01');
   assert.equal(d.people.get('p_guest').guestCost, 300000); // نصف 6000 بالقرش
   assert.equal(d.people.get('p_guest').sideBalance, 0); // افتراض أنه دفع نصيبه
-  // رأس المال = دفعات التربية (نصيبنا 6000) − مصروفات فترة البشاير (1000)
-  assert.equal(d.totals.capExpenses, 500000);
+  // التربية = دفعات التربية (نصيبنا 6000) − مصروفات فترة البشاير (1000)؛ والتأسيس = التربية + صافي البشاير
+  assert.equal(-d.totals.rearing.net, 500000);
+  assert.equal(d.totals.establishment, 500000 - 2336000);
   assert.equal(d.cycle.layStart, '2025-05-01');
   assert.equal(d.cycle.settleFrom, '2025-06');
   assert.equal(d.totals.lay.months, 1);

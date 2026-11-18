@@ -7,8 +7,8 @@ import { entity, listEntities } from '../../../core/engine.js';
 import { QTY } from '../../../core/money.js';
 import { addMonths } from '../../../core/util.js';
 import { CYCLE_STATUS, PRODUCTS, EGGS_PER_TRAY } from '../../../core/modules/poultry/config.js';
-import { aggregateMonths, cycleData, monthKpis, periodStats, personStatement } from '../../../core/modules/poultry/calc.js';
-import { countForm, cycleForm, expenseForm, guestForm, logForm, monthBatchForm, paymentForm, saleForm, sharesForm, toggleMonthClose } from './forms.js';
+import { aggregateMonths, cycleData, monthKpis, periodStats, personStatement, settlementPlan } from '../../../core/modules/poultry/calc.js';
+import { countForm, cycleForm, expenseForm, guestForm, logForm, monthBatchForm, paymentForm, recordSettlement, saleForm, sharesForm, toggleMonthClose } from './forms.js';
 import { personName } from '../../forms-common.js';
 
 const PG = 'poultry';
@@ -95,7 +95,7 @@ export function cycleScreen({ id, tab }) {
       'div',
       { class: 'stats' },
       st('رصيد ناحيتي عند المدير', me ? F.money(me.sideBalance) : '—', { valueClass: me ? signClass(me.sideBalance) : '', hint: me ? (me.sideBalance >= 0 ? 'لك' : 'عليك') : 'لست شريكاً', cls: 'primary', onclick: () => ctx.nav(`#/poultry/cycle/${id}/person/me`) }),
-      st('صافي الدورة حتى الآن', F.money(d.totals.net), { valueClass: signClass(d.totals.net), hint: `رأس مال ${F.money(-d.totals.capNet)}` }),
+      st('صافي الدورة حتى الآن', F.money(d.totals.net), { valueClass: signClass(d.totals.net), hint: `التأسيس ${F.money(d.totals.establishment)}` }),
     ),
     chips(TABS, tab, (v) => ctx.nav(`#/poultry/cycle/${id}/${v}`)),
   );
@@ -132,10 +132,10 @@ function summaryTab(c, d) {
     h(
       'div',
       { class: 'card' },
-      kv('تأسيس وتربية (رأس مال)', F.money(d.totals.capExpenses), '', { pg: PG }),
-      d.totals.capRevenue ? kv('مبيعات أثناء التربية', F.money(d.totals.capRevenue), 'pos', { pg: PG }) : null,
-      d.totals.guestCost ? kv('ما تحمّله الضيف', F.money(d.totals.guestCost), '', { pg: PG }) : null,
-      d.totals.lay.months ? kv(`فترة البشاير (${periodLabel(d.totals.lay.from, d.totals.lay.to)})`, F.money(d.totals.lay.net), signClass(d.totals.lay.net), { pg: PG }) : null,
+      kv('التربية', F.money(-d.totals.rearing.net), '', { pg: PG }),
+      d.totals.lay.months ? kv(`فترة البشاير (${periodLabel(d.totals.lay.from, d.totals.lay.to)})`, `صرف ${F.money(d.totals.lay.expenses)} − دخل ${F.money(d.totals.lay.revenue)} = ${F.money(-d.totals.lay.net)}`, '', { pg: PG }) : null,
+      kv('إجمالي التأسيس (رأس المال)', F.money(d.totals.establishment), 'neg', { pg: PG }),
+      d.totals.guestCost ? kv('ما تحمّله الضيف (خارج حصتنا)', F.money(d.totals.guestCost), '', { pg: PG }) : null,
       kv('مبيعات الشهور المنتظمة', F.money(d.totals.regular.revenue), 'pos', { pg: PG }),
       kv('مصروفات الشهور المنتظمة', F.money(d.totals.regular.expenses + d.totals.regular.capExpenses), 'neg', { pg: PG }),
       kv('ربح الشهور المنتظمة', F.money(d.totals.regular.net), signClass(d.totals.regular.net), { pg: PG }),
@@ -208,12 +208,12 @@ function monthsTab(c, d) {
   const lay = d.months.filter((r) => r.phase === 'lay');
   const rearing = d.months.filter((r) => r.phase === 'rearing');
   const items = [...regular.map((r) => monthRow(c, r))];
-  if (lay.length) items.push(periodRow(c, lay, '🐣 فترة البشاير'));
-  if (rearing.length) items.push(periodRow(c, rearing, '🏗️ التأسيس والتربية'));
+  if (lay.length) items.push(periodRow(c, lay, '🐣 فترة البشاير (تأسيس)'));
+  if (rearing.length) items.push(periodRow(c, rearing, '🏗️ التربية (تأسيس)'));
   return h(
     'div',
     {},
-    h('p', { class: 'muted small', text: 'كل شهر بحسب «شهر الحساب». فترة البشاير (من أول البيض حتى انتظام الإنتاج) والتأسيس يظهر كل منهما ككتلة واحدة. اضغط لتفاصيله وإقفاله بعد التحاسب.' }),
+    h('p', { class: 'muted small', text: 'كل شهر منتظم بحسب «شهر الحساب». التربية وفترة البشاير (من أول البيض حتى انتظام الإنتاج) كل منهما كتلة واحدة، وصافيهما معاً = التأسيس (رأس المال). الإقفال للحسابات فقط؛ الدفعات تُسجَّل في أي وقت.' }),
     items.length ? list(items) : empty('لا توجد قيود بعد'),
   );
 }
@@ -243,7 +243,8 @@ function partnersTab(c, d) {
   const out = h('div', {});
   const cur = d.currentShares;
   out.append(
-    h('div', { class: 'btn-row' }, h('button', { class: 'btn small', text: cur ? 'تغيير الحصص' : 'إضافة الحصص', onclick: () => sharesForm(c.id) }), h('button', { class: 'btn small', text: '+ دفعة', onclick: () => paymentForm(c.id) })),
+    h('div', { class: 'btn-row' }, h('button', { class: 'btn small', text: cur ? 'تغيير الحصص' : 'إضافة الحصص', onclick: () => sharesForm(c.id) }), h('button', { class: 'btn small', text: '+ دفعة', onclick: () => paymentForm(c.id) }), h('button', { class: 'btn small primary', text: 'التصفية', onclick: () => ctx.nav(`#/poultry/cycle/${c.id}/settle`) })),
+    h('p', { class: 'muted small', text: 'الاستلام والتوزيع بأي مبلغ وفي أي وقت (أكثر أو أقل من النصيب، لشريك واحد أو أكثر). الأرصدة تتابع الفرق، والتصفية في الآخر تساويها.' }),
   );
   if (!cur) {
     out.append(empty('لم تُسجل حصص بعد'));
@@ -372,7 +373,7 @@ export function periodScreen({ id, from, to }) {
   const r = aggregateMonths(rows);
   const k = monthKpis(r);
   const entries = d.entries.filter((e) => e.month && e.month >= from && e.month <= to);
-  const phaseName = r.pre ? 'التأسيس والتربية (رأس مال)' : r.lay ? 'فترة البشاير' : '';
+  const phaseName = r.lay ? 'فترة البشاير (تُضاف للتأسيس)' : r.pre ? 'التربية (تأسيس)' : '';
   const salesRows = [];
   for (const [g, v] of Object.entries(r.eggs.byGrade)) salesRows.push([`بيض ${entity(ctx.state, 'poultry.grade', g)?.name || g}`, F.qty(v.qty, { decimals: 0 }), F.money(Math.round((v.amount * QTY) / v.qty), { decimals: 2 }), F.money(v.amount)]);
   for (const p of ['bags', 'manure', 'birds', 'other']) if (r[p].amount) salesRows.push([PRODUCTS[p].name, r[p].qty ? F.qty(r[p].qty, { decimals: 0 }) : '', '', F.money(r[p].amount)]);
@@ -388,9 +389,9 @@ export function periodScreen({ id, from, to }) {
         { class: 'stats' },
         st('المبيعات', F.money(r.sales), { valueClass: 'pos', hint: r.eggs.qty ? `${trays(r.eggs.qty)} · ${perTray(k.eggAvg)}` : '' }),
         st('المصروفات (حصتنا)', F.money(r.expensesOurs), { valueClass: 'neg', hint: r.guestCost ? `الضيف ${F.money(r.guestCost)}` : k.costPerTray ? `تكلفة ${perTray(k.costPerTray)}` : '' }),
-        st(r.pre ? 'صافي (رأس مال)' : r.lay ? 'صافي فترة البشاير' : 'ربح/خسارة الشهر', F.money(r.opNet + r.capNet), { valueClass: signClass(r.opNet + r.capNet), cls: 'wide', hint: r.capExpenses && !r.pre ? `منه رأسمالي ${F.money(-r.capExpenses)}` : '' }),
+        st(r.lay ? 'صافي البشاير (يُضاف للتأسيس)' : r.pre ? 'صافي التربية (تأسيس)' : 'ربح/خسارة الشهر', F.money(r.opNet + r.capNet), { valueClass: signClass(r.opNet + r.capNet), cls: 'wide', hint: r.capExpenses && !r.pre ? `منه رأسمالي ${F.money(-r.capExpenses)}` : '' }),
       ),
-      r.lay ? h('p', { class: 'muted small', text: 'فترة البشاير: من أول البيض حتى انتظام الإنتاج. تُحاسَب ككتلة واحدة ولا تدخل متوسطات الشهور المنتظمة.' }) : null,
+      r.lay ? h('p', { class: 'muted small', text: 'فترة البشاير: من أول البيض حتى انتظام الإنتاج. صرفها ودخلها يُحسبان معاً، والفرق يُضاف على التربية في «التأسيس»، ولا تدخل متوسطات الشهور المنتظمة.' }) : null,
       r.closed ? h('div', { class: 'banner info', text: `${single ? 'الشهر' : 'الفترة'} مقفول${single ? '' : 'ة'} — لا يُعدَّل إلا بعد الفتح.` }) : actions(c, to),
       salesRows.length ? h('div', {}, sectionTitle('المبيعات'), table([{ label: 'الصنف' }, { label: 'العدد', num: true }, { label: 'متوسط', num: true }, { label: 'المبلغ', num: true }], salesRows, { totalRow: ['الإجمالي', '', '', F.money(r.sales)], pg: PG })) : null,
       expRows.length ? h('div', {}, sectionTitle('المصروفات'), table([{ label: 'البند' }, { label: 'الكمية', num: true }, { label: 'الإجمالي', num: true }, { label: 'حصتنا', num: true }], expRows, { totalRow: ['الإجمالي', '', F.money(r.expensesOurs + r.guestCost), F.money(r.expensesOurs)], pg: PG })) : null,
@@ -404,7 +405,7 @@ export function periodScreen({ id, from, to }) {
   };
 }
 
-const LINE_LABEL = { paid: 'دفع', received: 'استلم', month: 'نصيب شهر', lay: 'نصيب فترة البشاير', capital: 'نصيب التأسيس', guest: 'نصيبه كضيف من المصروف' };
+const LINE_LABEL = { paid: 'دفع', received: 'استلم', month: 'نصيب شهر', lay: 'نصيب فترة البشاير (تأسيس)', capital: 'نصيب التربية (تأسيس)', guest: 'نصيبه كضيف من المصروف' };
 
 export function cyclePersonScreen({ id, personId, head }) {
   const c = entity(ctx.state, 'poultry.cycle', id);
@@ -433,6 +434,35 @@ export function cyclePersonScreen({ id, personId, head }) {
           )
         : empty('لا توجد حركات'),
       h('p', { class: 'muted small', text: 'دفع = يزيد ما له، استلم = ينقص، ونصيب الشهر = ربحه (+) أو خسارته (−) حسب حصته.' }),
+    ),
+  };
+}
+
+// التصفية: ما يأخذه أو يدفعه كل طرف حتى تصبح الأرصدة صفراً.
+export function settleScreen({ id }) {
+  const c = entity(ctx.state, 'poultry.cycle', id);
+  if (!c) return { title: 'غير موجود', body: empty('الدورة غير موجودة') };
+  const d = cycleData(ctx.state, id);
+  const plan = settlementPlan(d);
+  const mgr = personName(c.managerId) || 'المدير';
+  const name = (x) => (x === 'cycle' ? mgr : personName(x));
+  const sub = (t) => (t.kind === 'sub' ? 'بين الشريك التابع ورأسه' : t.from === 'cycle' ? 'المدير يدفع من نقدية الدورة' : 'يدفع للمدير (للدورة)');
+  const line = (t) => row({ title: `${name(t.from)} ← ${name(t.to)}`, subtitle: sub(t), value: F.money(t.amount), pk: 'poultry|settle' });
+  const sides = plan.transfers.filter((t) => t.kind === 'side');
+  const subs = plan.transfers.filter((t) => t.kind === 'sub');
+  return {
+    title: 'التصفية',
+    subtitle: c.name,
+    body: h(
+      'div',
+      {},
+      h('p', { class: 'muted small', text: (c.status || 'active') === 'active' ? 'تصفية مبدئية: لو انتهت الدورة اليوم، هذه الدفعات تجعل كل الحسابات صفراً. سجّل بيع القطيع وكل الشهور أولاً لتصفية نهائية.' : 'الدفعات التي تجعل كل الحسابات صفراً.' }),
+      !plan.transfers.length ? h('div', { class: 'banner info', text: 'كل الحسابات مسوّاة — لا شيء مطلوب.' }) : null,
+      sides.length ? h('div', {}, sectionTitle('مع المدير'), list(sides.map(line))) : null,
+      subs.length ? h('div', {}, sectionTitle('الشركاء التابعون'), list(subs.map(line))) : null,
+      c.managerId ? h('div', { class: 'card' }, kv(`رصيد ${personName(c.managerId)} (المدير) بعد التصفية`, F.money(plan.managerBalance), signClass(plan.managerBalance), { pg: PG }), h('p', { class: 'muted small', text: 'حسابه يُعتبر مسوّى دائماً: هذا نصيبه من النتائج، وأي عجز أو زيادة في النقدية عليه.' })) : null,
+      plan.transfers.length ? h('button', { class: 'btn primary block', style: { marginTop: '12px' }, text: 'تسجيل التصفية كدفعات', onclick: () => recordSettlement(id, plan) }) : null,
+      h('p', { class: 'muted small', text: 'يمكنك بدلاً من ذلك تسجيل أي دفعة بمبلغها الفعلي من تبويب الشركاء؛ التصفية تتحدث تلقائياً.' }),
     ),
   };
 }

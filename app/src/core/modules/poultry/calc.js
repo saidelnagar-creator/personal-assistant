@@ -5,10 +5,11 @@
 //    via = null ⇒ شريك مباشر مع المدير (رأس «ناحية»)، via = رأس ⇒ شريك تابع يتعامل مع رأسه فقط.
 //  • الضيف (تربية مشتركة): قيد «poultry.guest» يسري من تاريخ: للضيف guestBirds من totalBirds طائر،
 //    فيتحمّل هذه النسبة من كل مصروف تاريخه بعد ذلك (إلا المصروف المعلَّم noGuest). guestBirds = 0 ⇒ انتهى.
-//  • المراحل بشهر الحساب: قبل شهر البشاير (layStart) «تأسيس وتربية» = رأس مال؛ من البشاير حتى أول شهر منتظم
-//    (settleFrom) «فترة البشاير»: تُحاسَب ككتلة واحدة ولا تدخل متوسطات الشهور المنتظمة؛ ومن settleFrom تسوية شهرية:
+//  • المراحل بشهر الحساب: قبل شهر البشاير (layStart) «تربية»؛ من البشاير حتى أول شهر منتظم (settleFrom) «فترة البشاير»:
+//    صرف كثير مع شوية دخل، والفرق (غالباً صرف) يُضاف على التربية. التربية + صافي البشاير = «التأسيس» (رأس المال).
+//    مثال: تربية 100 ألف، ثم بشاير صرف 40 ودخل 20 ⇒ التأسيس 120 ألف. ومن settleFrom تسوية شهرية:
 //    ربح الشهر = مبيعات شهر الحساب − مصروفاته التشغيلية (حصتنا فقط بعد خصم نصيب الضيف).
-//    بلا layStart: كل ما قبل settleFrom تأسيس وتربية.
+//    بلا layStart: كل ما قبل settleFrom تربية.
 //  • الأرصدة: ما تدين به الدورة (المدير) لكل ناحية = المدفوع − المستلم + نصيبها من النتائج − نصيبه كضيف.
 //    وما يدين به الرأس لكل تابع = ما دفعه التابع للرأس − ما استلمه منه + نصيب التابع من النتائج.
 //    المدير يحمل النقدية: أي عجز أو زيادة عليه، فرصيده = النقدية − أرصدة الباقين.
@@ -48,8 +49,8 @@ export function guestAt(guestList, date) {
 const blankMonth = (month) => ({
   month,
   phase: 'rearing', // rearing | lay | regular
-  pre: false, // = تأسيس وتربية (رأس مال)
-  lay: false, // = فترة البشاير
+  pre: false, // = مرحلة التأسيس (تربية أو بشاير) ⇒ رأس مال
+  lay: false, // = فترة البشاير (جزء من التأسيس)
   closed: false,
   sales: 0,
   eggs: { qty: 0, amount: 0, byGrade: {} },
@@ -99,7 +100,7 @@ export function computeCycle(state, cycleId, today = todayISO()) {
   const closed = state.closed.get(scopeOf(cycleId)) || new Map();
   const layMonth = cycle.layStart ? ymOf(cycle.layStart) : null;
   const phaseOf = (m) => (cycle.settleFrom && m >= cycle.settleFrom ? 'regular' : layMonth && m >= layMonth ? 'lay' : 'rearing');
-  const isPre = (m) => phaseOf(m) === 'rearing';
+  const isPre = (m) => phaseOf(m) !== 'regular'; // التربية والبشاير كلاهما تأسيس (رأس مال)
 
   const months = new Map();
   const M = (m) => {
@@ -215,7 +216,7 @@ export function computeCycle(state, cycleId, today = todayISO()) {
   let unallocated = 0;
   for (const r of monthList) {
     r.phase = phaseOf(r.month);
-    r.pre = r.phase === 'rearing';
+    r.pre = r.phase !== 'regular';
     r.lay = r.phase === 'lay';
     r.closed = closed.has(r.month);
     r.closedInfo = closed.get(r.month) || null;
@@ -248,10 +249,12 @@ export function computeCycle(state, cycleId, today = todayISO()) {
   totals.net = totals.opNet + totals.capNet;
   const sumPhase = (ph) => {
     const rows = monthList.filter((r) => r.phase === ph && (r.count || ph !== 'regular'));
-    return { from: rows[0]?.month || null, to: rows[rows.length - 1]?.month || null, months: rows.length, revenue: rows.reduce((a, r) => a + r.opRevenue, 0), expenses: rows.reduce((a, r) => a + r.opExpenses, 0), capExpenses: rows.reduce((a, r) => a + r.capExpenses, 0), net: rows.reduce((a, r) => a + r.opNet + r.capNet, 0) };
+    return { from: rows[0]?.month || null, to: rows[rows.length - 1]?.month || null, months: rows.length, revenue: rows.reduce((a, r) => a + r.sales, 0), expenses: rows.reduce((a, r) => a + r.expensesOurs, 0), capExpenses: rows.reduce((a, r) => a + r.capExpenses, 0), net: rows.reduce((a, r) => a + r.opNet + r.capNet, 0) };
   };
+  totals.rearing = sumPhase('rearing');
   totals.lay = sumPhase('lay');
   totals.regular = sumPhase('regular');
+  totals.establishment = -(totals.rearing.net + totals.lay.net); // التأسيس = صافي صرف التربية + صافي صرف البشاير
 
   // الأرصدة
   for (const p of people.values()) {
@@ -368,7 +371,7 @@ export function monthKpis(r) {
   return {
     trays,
     eggAvg: trays ? mulDiv(r.eggs.amount, QTY, trays) : null, // متوسط سعر الطبق (قرش)
-    costPerTray: trays && !r.pre ? mulDiv(r.opExpenses, QTY, trays) : null, // تكلفة الطبق التشغيلية = سعر التعادل
+    costPerTray: trays ? mulDiv(r.pre ? r.expensesOurs : r.opExpenses, QTY, trays) : null, // تكلفة الطبق = سعر التعادل
     feedQty: feed.qty, // طن ×1000 (= كيلو)
     feedAmount: feed.gross,
     feedAvg: feed.qty ? mulDiv(feed.qtyGross, QTY, feed.qty) : null, // متوسط سعر الطن
@@ -392,7 +395,7 @@ function cycleKpis(months, totals, days) {
     cum += r.opNet + r.capNet;
     if (!r.pre && cum >= 0 && payback === null && totals.capExpenses > 0) payback = r.month;
   }
-  const capital = totals.capExpenses - totals.capRevenue;
+  const capital = totals.capExpenses - totals.capRevenue; // = التأسيس (تربية + صافي البشاير + أي رأسمالي)
   const roi = capital > 0 ? totals.net / capital : null;
   const avg = settled.length ? settled.reduce((a, r) => a + r.opNet + r.capNet, 0) / settled.length : null;
   const toRecover = Math.max(0, -totals.net); // المتبقي لاسترداد رأس المال (قبل بيع القطيع)
@@ -473,7 +476,7 @@ export function personStatement(data, personId, { head = null } = {}) {
         cap += a.cap;
       }
     }
-    if (op || cap) lines.push({ date: `${r.month}-28`, month: r.month, kind: r.pre ? 'capital' : r.lay ? 'lay' : 'month', amount: op + cap, op, cap });
+    if (op || cap) lines.push({ date: `${r.month}-28`, month: r.month, kind: r.lay ? 'lay' : r.pre ? 'capital' : 'month', amount: op + cap, op, cap });
   }
   if (!head) for (const r of data.months) if (r.guestBy[personId]) lines.push({ date: `${r.month}-28`, month: r.month, kind: 'guest', amount: -r.guestBy[personId] });
   lines.sort((a, b) => cmp(a.date, b.date));
@@ -483,3 +486,24 @@ export function personStatement(data, personId, { head = null } = {}) {
 }
 
 export const nextMonthOf = (ym) => addMonths(ym, 1);
+
+// التصفية: الدفعات التي تجعل كل الأرصدة صفراً (عدا المدير: حسابه يُعتبر مسوّى دائماً وأي عجز أو زيادة عليه).
+//   ناحية أو ضيف رصيده موجب ⇒ الدورة (المدير) تدفع له، سالب ⇒ يدفع للدورة.
+//   تابع رصيده عند رأسه موجب ⇒ الرأس يدفع له، سالب ⇒ يدفع لرأسه.
+// المبالغ المستلمة خلال الدورة حرة (أكثر أو أقل من النصيب، لشريك واحد أو أكثر)؛ الفروق كلها تظهر هنا في الآخر.
+export function settlementPlan(data) {
+  const transfers = [];
+  const managerId = data.cycle.managerId || null;
+  for (const p of data.people.values()) {
+    if (p.personId === managerId || !(p.isTop || p.isGuest)) continue;
+    if (p.sideBalance > 0) transfers.push({ from: 'cycle', to: p.personId, amount: p.sideBalance, kind: 'side' });
+    else if (p.sideBalance < 0) transfers.push({ from: p.personId, to: 'cycle', amount: -p.sideBalance, kind: 'side' });
+  }
+  for (const q of data.people.values())
+    for (const w of q.withHeads) {
+      if (w.balance > 0) transfers.push({ from: w.head, to: q.personId, amount: w.balance, kind: 'sub' });
+      else if (w.balance < 0) transfers.push({ from: q.personId, to: w.head, amount: -w.balance, kind: 'sub' });
+    }
+  const manager = managerId ? data.people.get(managerId) || null : null;
+  return { transfers, managerId, managerBalance: manager ? manager.sideBalance : 0, poolAfter: data.cash.pool - transfers.filter((t) => t.kind === 'side').reduce((a, t) => a + (t.from === 'cycle' ? t.amount : -t.amount), 0) };
+}
