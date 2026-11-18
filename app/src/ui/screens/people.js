@@ -15,7 +15,7 @@ export function peopleScreen() {
   const f = ui('people', { q: '' });
   const fin = financeOverview(ctx.state);
   const balance = new Map();
-  for (const it of fin.items) if (it.personId) balance.set(it.personId, (balance.get(it.personId) || 0) + (it.kind === 'payable' ? it.amount : -it.amount));
+  for (const it of fin.items) if (it.personId && (it.kind === 'payable' || it.kind === 'receivable')) balance.set(it.personId, (balance.get(it.personId) || 0) + (it.kind === 'payable' ? it.amount : -it.amount));
   const search = h('input', { class: 'search', type: 'search', placeholder: 'بحث بالاسم…', value: f.q, 'aria-label': 'بحث' });
   const box = h('div', {});
   const draw = () => {

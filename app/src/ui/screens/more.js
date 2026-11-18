@@ -7,6 +7,7 @@ import { normalizeDigits } from '../../core/money.js';
 import { APP_VERSION, APP_NAME } from '../../config/version.js';
 import { SCHEMA_VERSION } from '../../core/migrations/index.js';
 import { RULES } from '../../config/rules.js';
+import { MONEY_RULES } from '../../core/modules/money/config.js';
 import { makePinRecord } from '../pin.js';
 import { saveButton } from '../forms-common.js';
 
@@ -14,6 +15,7 @@ export function moreScreen() {
   const items = [
     ['💾 النسخ الاحتياطي', '#/backup', 'تصدير، استيراد، Google Drive'],
     ['🔔 التذكيرات', '#/reminders', 'مواعيد متكررة وتنبيهات القطاعات'],
+    ['💱 الأسعار', '#/prices', 'الذهب والعملات (لقيمة السلف والأمانات)'],
     ['📁 المجموعات', '#/groups', 'تنظيم الأشياء معاً'],
     ['📋 القوائم', '#/lists', 'بنود المصروف وأنواع البيض'],
     ['⚙️ الإعدادات', '#/settings', 'القفل، الأرقام'],
@@ -65,6 +67,11 @@ export function settingsScreen() {
     const v = days.int();
     if (Number.isInteger(v)) ctx.store.run((b) => b.dispatch('settings.set', { key: 'backupReminderDays', value: v }));
   });
+  const remind = intInput(String(s['money.remindDays'] ?? MONEY_RULES.remindDays));
+  remind.addEventListener('change', () => {
+    const v = remind.int();
+    if (Number.isInteger(v) && v >= 0 && v <= 60) ctx.store.run((b) => b.dispatch('settings.set', { key: 'money.remindDays', value: v }));
+  });
   return {
     title: 'الإعدادات',
     body: h(
@@ -97,6 +104,7 @@ export function settingsScreen() {
       sectionTitle('العرض'),
       field('شكل الأرقام', digits),
       field('تذكير النسخة الاحتياطية بعد (يوم)', days, '0 = إيقاف التذكير'),
+      field('التذكير بالسداد وأقساط الجمعيات والقبض قبلها بـ (يوم)', remind, 'الافتراضي أسبوع'),
       h('p', { class: 'muted small', text: 'إخفاء الأرصدة: زر العين أعلى أي شاشة يخفي كل الأرقام بضغطة، وزر الضبط بجانبه يخصّص ما يُخفى.' }),
     ),
   };

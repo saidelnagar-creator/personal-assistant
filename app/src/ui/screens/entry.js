@@ -47,7 +47,7 @@ export function entryScreen({ id }) {
         : h(
             'div',
             { class: 'btn-row' },
-            mod?.editEntry ? h('button', { class: 'btn primary', text: 'تعديل', onclick: () => mod.editEntry(e) }) : null,
+            mod?.editEntry && (!mod.canEdit || mod.canEdit(e)) ? h('button', { class: 'btn primary', text: 'تعديل', onclick: () => mod.editEntry(e) }) : null,
             h('button', { class: 'btn danger', text: 'إلغاء القيد', onclick: async () => (await voidEntryFlow(e)) && ctx.refresh() }),
           ),
       e.replaces ? badge('هذا قيد معدَّل', 'info') : null,

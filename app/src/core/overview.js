@@ -15,12 +15,14 @@ export const FIN_KINDS = {
   asset: 'ممتلكات قابلة للبيع',
   expected: 'دخل متوقع',
   payable: 'عليّ للغير',
+  held: 'أمانات عندي لغيري (خارج الحساب)',
 };
 
 // يجمع بنود الوضع المالي من كل الوحدات. الأصول = سيولة + ما لي + ممتلكات؛ الالتزامات = ما عليّ.
-export function financeOverview(state) {
+// «أمانات عندي لغيري» للعرض فقط: ليست ملكي ولا ديناً عليّ (محفوظة كما هي)، فلا تدخل الصافي.
+export function financeOverview(state, today = todayISO()) {
   const items = [];
-  for (const m of MODULES) if (m.finance) for (const it of m.finance(state)) items.push({ module: m.id, ...it });
+  for (const m of MODULES) if (m.finance) for (const it of m.finance(state, today)) items.push({ module: m.id, ...it });
   const totals = Object.fromEntries(Object.keys(FIN_KINDS).map((k) => [k, 0]));
   for (const it of items) totals[it.kind] += it.amount;
   const assets = totals.cash + totals.receivable + totals.asset;
