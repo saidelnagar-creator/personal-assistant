@@ -1,0 +1,8 @@
+# بيانات حقيقية — لا تدخل git أبداً
+input/
+output/
+*.xlsx
+*.xls
+*.xlsm
+*-backup*.json
+node_modules/

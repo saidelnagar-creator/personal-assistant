@@ -1,0 +1,659 @@
+// نماذج الدواجن: دورة، حصص، ضيف، مصروف، بيع، دفعة، نافق/إنتاج، جرد، وإدخال شهر كامل دفعة واحدة.
+import { h, clear } from '../../dom.js';
+import { ctx, F } from '../../ctx.js';
+import { checkbox, chips, dateInput, errorBox, field, intInput, moneyInput, monthSelect, openSheet, qtyInput, selectInput, textArea, textInput, toast, confirmDialog } from '../../components.js';
+import { commitEntry, personName, personPicker, saveButton, simpleEntityForm } from '../../forms-common.js';
+import { entity, listEntities } from '../../../core/engine.js';
+import { lineAmount, QTY } from '../../../core/money.js';
+import { parseShare, sumShares, formatShare } from '../../../core/shares.js';
+import { ValidationError, ymOf, lastDayOf } from '../../../core/util.js';
+import { BREEDS, CYCLE_STATUS, PRODUCTS } from '../../../core/modules/poultry/config.js';
+import { cycleData, guestAt } from '../../../core/modules/poultry/calc.js';
+
+const cats = () => listEntities(ctx.state, 'poultry.category').sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
+const grades = () => listEntities(ctx.state, 'poultry.grade').sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
+const cycleOf = (id) => entity(ctx.state, 'poultry.cycle', id);
+const need = (cond, msg) => {
+  if (!cond) throw new ValidationError(msg);
+};
+
+// تاريخ + شهر حساب مرتبطان: تغيير التاريخ يغيّر الشهر ما لم يغيّره المستخدم يدوياً.
+function dateMonth(date, month) {
+  const d = dateInput(date);
+  const m = monthSelect(month || ymOf(d.value));
+  let touched = !!month && month !== ymOf(d.value);
+  m.addEventListener('change', () => (touched = true));
+  d.addEventListener('change', () => {
+    if (!touched && d.value) m.value = ymOf(d.value);
+  });
+  return { d, m, fields: [field('التاريخ الفعلي', d), field('على حساب شهر', m, 'الشهر الذي يدخل فيه القيد عند التسوية (قد يختلف عن التاريخ الفعلي)')] };
+}
+
+// سطر «كمية × سعر = مبلغ» مع حساب تلقائي، أو مبلغ إجمالي فقط.
+function qtyPriceAmount({ qty = null, price = null, amount = null, qtyLabel = 'الكمية', priceLabel = 'سعر الوحدة', showQty = true }) {
+  const q = qtyInput(qty);
+  const p = moneyInput(price);
+  const a = moneyInput(amount);
+  const hint = h('div', { class: 'hint' });
+  const recalc = () => {
+    const qu = q.units();
+    const pu = p.units();
+    if (qu && pu) {
+      a.setUnits(lineAmount(qu, pu));
+      a.readOnly = true;
+      hint.textContent = 'المبلغ = الكمية × السعر';
+    } else {
+      a.readOnly = false;
+      hint.textContent = showQty ? 'أدخل الكمية والسعر، أو المبلغ الإجمالي فقط' : '';
+    }
+  };
+  q.addEventListener('input', recalc);
+  p.addEventListener('input', recalc);
+  recalc();
+  const els = showQty ? [h('div', { class: 'grid2' }, field(qtyLabel, q), field(priceLabel, p)), field('المبلغ', a), hint] : [field('المبلغ', a)];
+  return {
+    els,
+    read() {
+      const qu = showQty ? q.units() : null;
+      const pu = showQty ? p.units() : null;
+      need(q.value.trim() === '' || qu !== null, 'الكمية غير صالحة');
+      need(p.value.trim() === '' || pu !== null, 'السعر غير صالح');
+      const au = qu && pu ? lineAmount(qu, pu) : a.units();
+      need(au && au > 0, 'أدخل المبلغ');
+      return { qty: qu || undefined, price: pu || undefined, amount: au };
+    },
+  };
+}
+
+const clean = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== null && v !== ''));
+
+// ---------- الدورة ----------
+export function cycleForm(cycle = null) {
+  openSheet(cycle ? 'تعديل الدورة' : 'دورة جديدة', (body, close) => {
+    const err = errorBox();
+    const name = textInput(cycle?.name || '', 'مثال: مزرعتنا-مايو-2026-أبيض');
+    const farms = () => listEntities(ctx.state, 'poultry.farm').map((f) => ({ value: f.id, label: f.name }));
+    let farm = selectInput(farms(), cycle?.farmId || '', { placeholder: 'بدون' });
+    const farmWrap = h('div', { class: 'picker' }, farm, h('button', { type: 'button', class: 'btn small', text: '+ مزرعة', onclick: () => simpleEntityForm('poultry.farm', 'مزرعة', null, { onSaved: (f) => { const n = selectInput(farms(), f.id, { placeholder: 'بدون' }); farm.replaceWith(n); farm = n; } }) }));
+    const breed = selectInput(BREEDS.map((b) => ({ value: b, label: b })), cycle?.breed || BREEDS[0]);
+    const start = dateInput(cycle?.startDate);
+    const birds = intInput(cycle?.birds ?? '');
+    const age = intInput(cycle?.ageDays ?? '1');
+    const lay = h('input', { type: 'date', value: cycle?.layStart || '' });
+    const settle = monthSelect(cycle?.settleFrom || '', {});
+    settle.prepend(h('option', { value: '', text: 'لم تبدأ بعد (كله تأسيس وتربية)' }));
+    settle.value = cycle?.settleFrom || '';
+    const manager = personPicker(cycle?.managerId || '', { placeholder: 'اختر المدير' });
+    const groups = listEntities(ctx.state, 'group').map((g) => ({ value: g.id, label: g.name }));
+    const group = selectInput(groups, cycle?.groupId || '', { placeholder: 'بدون' });
+    const status = selectInput(Object.entries(CYCLE_STATUS).map(([value, label]) => ({ value, label })), cycle?.status || 'active');
+    const end = h('input', { type: 'date', value: cycle?.endDate || '' });
+    const note = textArea(cycle?.note || '');
+    body.append(
+      err,
+      field('اسم مميز للدورة', name, 'الشهر والسنة + ما يميزها (المزرعة، السلالة) حتى لا تختلط الدورات الشغالة معاً'),
+      field('المزرعة', farmWrap),
+      h('div', { class: 'grid2' }, field('السلالة', breed), field('تاريخ البداية', start)),
+      h('div', { class: 'grid2' }, field('عدد الطيور عند الشراء', birds), field('عمر الطائر عند الشراء (يوم)', age)),
+      field('بداية البيض (البشاير)', lay, 'اختياري'),
+      field('أول شهر في التسوية الشهرية', settle, 'قبله: كل المصروفات «تأسيس وتربية» (رأس مال). من هذا الشهر: حساب مكسب/خسارة كل شهر.'),
+      field('المدير (السيولة في يده)', manager, 'أي عجز أو زيادة في النقدية يُحسب عليه'),
+      h('div', { class: 'grid2' }, field('الحالة', status), field('تاريخ النهاية', end)),
+      groups.length ? field('المجموعة', group) : null,
+      field('ملاحظة', note),
+      saveButton(
+        'حفظ',
+        async () => {
+          const b = birds.int();
+          const a = age.int();
+          need(b !== null && !Number.isNaN(b), 'أدخل عدد الطيور');
+          need(a === null || !Number.isNaN(a), 'العمر غير صالح');
+          const data = clean({ id: cycle?.id, name: name.value.trim(), farmId: farm.value || null, breed: breed.value, startDate: start.value, birds: b, ageDays: a ?? 0, layStart: lay.value || null, settleFrom: settle.value || null, managerId: manager.value || null, groupId: group.value || null, status: status.value, endDate: end.value || null, note: note.value.trim() });
+          for (const k of ['farmId', 'layStart', 'settleFrom', 'managerId', 'groupId', 'endDate']) if (!(k in data)) data[k] = null;
+          const { result } = await ctx.store.run((bk) => bk.upsert('poultry.cycle', data));
+          toast('تم حفظ الدورة');
+          close();
+          if (!cycle) {
+            ctx.nav(`#/poultry/cycle/${result.id}/partners`);
+            setTimeout(() => sharesForm(result.id), 50);
+          }
+        },
+        err,
+      ),
+    );
+  });
+}
+
+// ---------- الحصص ----------
+export function sharesForm(cycleId, { base = null } = {}) {
+  const c = cycleOf(cycleId);
+  const data = cycleData(ctx.state, cycleId);
+  const prev = base || data.currentShares;
+  openSheet('حصص الشركاء', (body, close) => {
+    const err = errorBox();
+    const from = monthSelect(prev ? ctx.nowMonth() : ymOf(c.startDate));
+    const rowsBox = h('div', { class: 'lines' });
+    const total = h('div', { class: 'line-summary' });
+    const rows = [];
+    const directIds = () => rows.filter((r) => r.via.value === '').map((r) => r.person.value).filter(Boolean);
+    const refreshVia = () => {
+      for (const r of rows) {
+        const cur = r.via.value;
+        clear(r.via);
+        r.via.append(h('option', { value: '', text: 'شريك مباشر مع المدير' }));
+        for (const id of directIds()) if (id !== r.person.value) r.via.append(h('option', { value: id, text: `تابع لـ ${personName(id)}` }));
+        r.via.value = [...r.via.options].some((o) => o.value === cur) ? cur : '';
+      }
+    };
+    const recalc = () => {
+      const parsed = rows.map((r) => parseShare(r.share.value)).filter(Boolean);
+      const s = parsed.length ? sumShares(parsed) : { num: 0, den: 1 };
+      const pct = (s.num * 100) / s.den;
+      total.textContent = `المجموع: ${F.num(Math.round(pct * 100) / 100)}% ${s.num === s.den ? '✓' : `(المتبقي ${F.num(Math.round((100 - pct) * 100) / 100)}%)`}`;
+      total.className = `line-summary ${s.num === s.den ? 'pos' : 'neg'}`;
+    };
+    const addRow = (st = {}) => {
+      const person = personPicker(st.personId || '', { placeholder: 'الشريك' });
+      const share = textInput(st.num ? `${st.num}/${st.den}` : '', '1/3 أو 50');
+      share.inputMode = 'decimal';
+      const via = h('select', {});
+      via.append(h('option', { value: '', text: 'شريك مباشر مع المدير' }));
+      const r = { person, share, via };
+      const line = h('div', { class: 'line' }, h('div', { class: 'grid' }, person, share), via, h('button', { type: 'button', class: 'rm', 'aria-label': 'حذف', text: '×', onclick: () => (rows.splice(rows.indexOf(r), 1), line.remove(), refreshVia(), recalc()) }));
+      rows.push(r);
+      rowsBox.append(line);
+      person.onChange(() => refreshVia());
+      share.addEventListener('input', recalc);
+      refreshVia();
+      if (st.via) {
+        refreshVia();
+        via.value = st.via;
+      }
+    };
+    if (prev) for (const st of prev.stakes) addRow(st);
+    else {
+      addRow({ personId: 'me' });
+      if (c.managerId) addRow({ personId: c.managerId });
+    }
+    refreshVia();
+    if (prev) prev.stakes.forEach((st, i) => (rows[i].via.value = st.via || ''));
+    recalc();
+    body.append(
+      err,
+      h('p', { class: 'muted small', text: 'كل حصة نسبة من الدورة كلها. اكتب كسراً مثل 1/3 أو نسبة مئوية مثل 50. الشريك «التابع» يدفع لرأسه ويستلم منه، وحساباته تظهر منفصلة.' }),
+      field('تسري من شهر', from, prev ? 'الشهور السابقة تبقى بالحصص القديمة' : ''),
+      rowsBox,
+      h('button', { type: 'button', class: 'btn small', text: '+ شريك', onclick: () => addRow() }),
+      total,
+      saveButton(
+        'حفظ الحصص',
+        async () => {
+          const stakes = rows.map((r) => {
+            need(r.person.value, 'اختر كل الشركاء');
+            const s = parseShare(r.share.value);
+            need(s, `حصة ${personName(r.person.value)} غير صالحة — اكتب مثل 1/3 أو 50`);
+            return { personId: r.person.value, num: s.num, den: s.den, via: r.via.value || null };
+          });
+          await commitEntry({ kind: 'poultry.shares', cycleId, date: `${from.value}-01`, from: from.value, stakes });
+          toast('تم حفظ الحصص');
+          close();
+        },
+        err,
+      ),
+    );
+  });
+}
+
+// ---------- التربية المشتركة (ضيف) ----------
+export function guestForm(cycleId, { end = false, personId = '' } = {}) {
+  const c = cycleOf(cycleId);
+  openSheet(end ? 'الضيف أخذ طيوره' : 'تربية مشتركة مع ضيف', (body, close) => {
+    const err = errorBox();
+    const person = personPicker(personId, { placeholder: 'صاحب الطيور الضيف' });
+    const date = dateInput();
+    const g = intInput('');
+    const t = intInput(c.birds ? String(c.birds * 2) : '');
+    body.append(
+      err,
+      h('p', { class: 'muted small', text: end ? 'من هذا التاريخ لا يتحمّل الضيف أي مصروف.' : 'أحياناً نبدأ بتربية طيور لنا وطيور لشخص آخر معاً؛ يتحمّل الضيف نسبة طيوره من كل مصروف بعد هذا التاريخ حتى يأخذ طيوره. لو تغيّر العدد سجّل نسخة جديدة بتاريخها.' }),
+      field('الضيف', person),
+      field('من تاريخ', date),
+      end ? null : h('div', { class: 'grid2' }, field('عدد طيور الضيف', g), field('إجمالي الطيور (لنا + له)', t)),
+      saveButton(
+        'حفظ',
+        async () => {
+          need(person.value, 'اختر الضيف');
+          const gb = end ? 0 : g.int();
+          const tb = end ? c.birds || 1 : t.int();
+          need(Number.isInteger(gb) && Number.isInteger(tb), 'أدخل الأعداد');
+          await commitEntry({ kind: 'poultry.guest', cycleId, date: date.value, personId: person.value, guestBirds: gb, totalBirds: Math.max(tb, gb + 1) });
+          toast('تم الحفظ');
+          close();
+        },
+        err,
+      ),
+    );
+  });
+}
+
+// ---------- المصروف ----------
+export function expenseForm(cycleId, { month = null, entry = null } = {}) {
+  const c = cycleOf(cycleId);
+  openSheet(entry ? 'تعديل مصروف' : 'مصروف', (body, close) => {
+    const err = errorBox();
+    const cat = selectInput(cats().map((x) => ({ value: x.id, label: x.name })), entry?.category || 'feed');
+    const dm = dateMonth(entry?.date, entry?.month || month);
+    const qpBox = h('div', {});
+    let qp;
+    const build = () => {
+      const k = entity(ctx.state, 'poultry.category', cat.value);
+      qp = qtyPriceAmount({ qty: entry?.category === cat.value ? entry?.qty : null, price: entry?.category === cat.value ? entry?.price : null, amount: entry?.amount ?? null, qtyLabel: k?.unit ? `الكمية (${k.unit})` : 'الكمية', priceLabel: k?.unit ? `سعر ال${k.unit}` : 'سعر الوحدة', showQty: !!k?.unit });
+      clear(qpBox);
+      qpBox.append(...qp.els);
+    };
+    cat.addEventListener('change', build);
+    build();
+    const capital = checkbox('رأسمالي (تجهيز/معدّة لا تدخل حساب الشهر، تُحسب على الدورة)', !!entry?.capital);
+    const noGuest = checkbox('خاص بنا فقط (لا يتحمّل الضيف منه شيئاً)', !!entry?.noGuest);
+    const hasGuest = cycleData(ctx.state, cycleId).guests.length > 0;
+    const note = textArea(entry?.note || '', 'تفاصيل (اختياري)');
+    body.append(
+      err,
+      field('البند', cat),
+      qpBox,
+      ...dm.fields,
+      c.settleFrom ? capital : null,
+      hasGuest ? noGuest : null,
+      field('ملاحظة', note),
+      saveButton(
+        'حفظ',
+        async () => {
+          const v = qp.read();
+          const e = clean({ kind: 'poultry.expense', cycleId, category: cat.value, date: dm.d.value, month: dm.m.value, ...v, capital: capital.input.checked || undefined, noGuest: noGuest.input.checked || undefined, note: note.value.trim() });
+          await commitEntry(e, entry);
+          toast('تم حفظ المصروف');
+          close();
+        },
+        err,
+      ),
+    );
+  });
+}
+
+// ---------- البيع ----------
+export function saleForm(cycleId, { month = null, entry = null, product = 'eggs' } = {}) {
+  openSheet(entry ? 'تعديل بيع' : 'بيع', (body, close) => {
+    const err = errorBox();
+    let prod = entry?.product || product;
+    const box = h('div', {});
+    const dm = dateMonth(entry?.date, entry?.month || month);
+    const note = textArea(entry?.note || '');
+    let reader = null;
+    const same = (p) => (entry && entry.product === p ? entry : {});
+    const build = () => {
+      clear(box);
+      const e = same(prod);
+      if (prod === 'eggs') {
+        const grade = selectInput(grades().map((g) => ({ value: g.id, label: g.name })), e.grade || 'normal');
+        const qp = qtyPriceAmount({ qty: e.qty, price: e.price, amount: e.amount, qtyLabel: 'عدد الأطباق', priceLabel: 'سعر الطبق' });
+        box.append(field('نوع البيض', grade), ...qp.els);
+        reader = () => {
+          const v = qp.read();
+          need(v.qty && v.price, 'أدخل عدد الأطباق وسعر الطبق');
+          return { grade: grade.value, ...v };
+        };
+      } else if (prod === 'birds') {
+        const count = qtyInput(e.qty);
+        const qp = qtyPriceAmount({ qty: e.weight, price: e.price, amount: e.amount, qtyLabel: 'الوزن الإجمالي (كجم)', priceLabel: 'سعر الكيلو' });
+        box.append(field('عدد الطيور المباعة', count, 'يُخصم من عدد القطيع'), ...qp.els);
+        reader = () => {
+          const v = qp.read();
+          return { qty: count.units() || undefined, weight: v.qty, price: v.price, amount: v.amount };
+        };
+      } else {
+        const p = PRODUCTS[prod];
+        const qp = qtyPriceAmount({ qty: e.qty, price: e.price, amount: e.amount, qtyLabel: `العدد (${p.unit || 'وحدة'})`, priceLabel: p.priceLabel, showQty: prod !== 'other' });
+        box.append(...qp.els);
+        reader = () => qp.read();
+      }
+    };
+    const kinds = chips(Object.entries(PRODUCTS).map(([value, p]) => ({ value, label: p.name })), prod, (v) => {
+      prod = v;
+      build();
+    });
+    build();
+    body.append(
+      err,
+      entry ? null : kinds,
+      box,
+      ...dm.fields,
+      field('ملاحظة', note, prod === 'other' ? 'اكتب نوع الإيراد' : ''),
+      saveButton(
+        'حفظ',
+        async () => {
+          const v = reader();
+          if (prod === 'other') need(note.value.trim(), 'اكتب نوع الإيراد في الملاحظة');
+          await commitEntry(clean({ kind: 'poultry.sale', cycleId, product: prod, date: dm.d.value, month: dm.m.value, ...v, note: note.value.trim() }), entry);
+          toast('تم حفظ البيع');
+          close();
+        },
+        err,
+      ),
+    );
+  });
+}
+
+// ---------- الدفعات ----------
+const PAY_TYPES = [
+  { value: 'in', label: 'دفعة للدورة' },
+  { value: 'out', label: 'استلام من الدورة' },
+  { value: 'subIn', label: 'تابع دفع لرأسه' },
+  { value: 'subOut', label: 'رأس دفع لتابعه' },
+];
+
+export function paymentForm(cycleId, { entry = null, type = null, personId = null } = {}) {
+  const data = cycleData(ctx.state, cycleId);
+  const direct = [...data.people.values()].filter((p) => p.isTop || p.isGuest || p.personId === data.cycle.managerId).map((p) => p.personId);
+  const subs = [...data.people.values()].filter((p) => p.isSub);
+  const initType = entry ? (entry.to === 'cycle' ? 'in' : entry.from === 'cycle' ? 'out' : subs.some((s) => s.personId === entry.from) ? 'subIn' : 'subOut') : type || 'in';
+  openSheet(entry ? 'تعديل دفعة' : 'دفعة', (body, close) => {
+    const err = errorBox();
+    let kind = initType;
+    const box = h('div', {});
+    const amount = moneyInput(entry?.amount ?? null);
+    const date = dateInput(entry?.date);
+    const note = textArea(entry?.note || '');
+    let read = null;
+    const build = () => {
+      clear(box);
+      if (kind === 'in' || kind === 'out') {
+        const cur = entry ? (kind === 'in' ? entry.from : entry.to) : personId || (direct.includes('me') ? 'me' : direct[0] || '');
+        const p = personPicker(cur, { ids: direct.slice(), allowNew: false, placeholder: 'الشريك' });
+        box.append(field(kind === 'in' ? 'الدافع (للمدير)' : 'المستلم (من المدير)', p, 'الشركاء المباشرون والضيوف فقط؛ التابع يتعامل مع رأسه'));
+        read = () => {
+          need(p.value, 'اختر الشخص');
+          return kind === 'in' ? { from: p.value, to: 'cycle' } : { from: 'cycle', to: p.value };
+        };
+      } else {
+        const sub = personPicker(entry ? (kind === 'subIn' ? entry.from : entry.to) : personId || subs[0]?.personId || '', { ids: subs.map((s) => s.personId), allowNew: false, placeholder: 'الشريك التابع' });
+        const headOf = (id) => [...(data.people.get(id)?.heads || [])];
+        const headLabel = h('div', { class: 'hint' });
+        const upd = () => (headLabel.textContent = sub.value ? `رأسه: ${headOf(sub.value).map(personName).join('، ')}` : '');
+        sub.onChange(upd);
+        upd();
+        box.append(field('الشريك التابع', sub), headLabel);
+        read = () => {
+          need(sub.value, 'اختر الشريك التابع');
+          const head = headOf(sub.value)[0];
+          return kind === 'subIn' ? { from: sub.value, to: head } : { from: head, to: sub.value };
+        };
+      }
+    };
+    const types = chips(PAY_TYPES.filter((t) => subs.length || !t.value.startsWith('sub')), kind, (v) => {
+      kind = v;
+      build();
+    });
+    build();
+    body.append(
+      err,
+      types,
+      box,
+      field('المبلغ', amount),
+      field('التاريخ', date),
+      field('ملاحظة', note),
+      saveButton(
+        'حفظ',
+        async () => {
+          const a = amount.units();
+          need(a && a > 0, 'أدخل المبلغ');
+          await commitEntry(clean({ kind: 'poultry.payment', cycleId, date: date.value, amount: a, ...read(), note: note.value.trim() }), entry);
+          toast('تم حفظ الدفعة');
+          close();
+        },
+        err,
+      ),
+    );
+  });
+}
+
+// ---------- نافق / إنتاج / ملاحظة ----------
+export function logForm(cycleId, { entry = null, month = null } = {}) {
+  openSheet(entry ? 'تعديل' : 'نافق / إنتاج / حدث', (body, close) => {
+    const err = errorBox();
+    const dm = dateMonth(entry?.date, entry?.month || month);
+    const deaths = intInput(entry?.deaths ?? '');
+    const trays = qtyInput(entry?.trays ?? null);
+    const note = textArea(entry?.note || '', 'مثال: مرض تنفسي، كشف بيطري…');
+    body.append(
+      err,
+      h('p', { class: 'muted small', text: 'اختياري وبأي فترة: يوم أو أسبوع أو شهر كامل. الإنتاج يُحسب من المبيعات تلقائياً حتى لو لم تسجله هنا.' }),
+      h('div', { class: 'grid2' }, field('عدد النافق', deaths), field('الإنتاج (أطباق)', trays)),
+      ...dm.fields,
+      field('ملاحظة', note),
+      saveButton(
+        'حفظ',
+        async () => {
+          const d = deaths.int();
+          need(d === null || !Number.isNaN(d), 'عدد النافق غير صالح');
+          const t = trays.units();
+          need(trays.value.trim() === '' || t !== null, 'عدد الأطباق غير صالح');
+          await commitEntry(clean({ kind: 'poultry.log', cycleId, date: dm.d.value, month: dm.m.value, deaths: d || undefined, trays: t || undefined, note: note.value.trim() }), entry);
+          toast('تم الحفظ');
+          close();
+        },
+        err,
+      ),
+    );
+  });
+}
+
+// ---------- الجرد ----------
+export function countForm(cycleId, { entry = null, item = 'birds' } = {}) {
+  openSheet('جرد', (body, close) => {
+    const err = errorBox();
+    let kind = entry?.item || item;
+    const box = h('div', {});
+    const date = dateInput(entry?.date);
+    const note = textArea(entry?.note || '');
+    let read;
+    const build = () => {
+      clear(box);
+      if (kind === 'birds') {
+        const n = intInput(entry?.item === 'birds' ? entry.qty / QTY : '');
+        box.append(field('عدد الطيور الحية فعلاً', n, 'يصبح هذا هو العدد من تاريخه، ويُخصم منه النافق والمباع بعده'));
+        read = () => {
+          const v = n.int();
+          need(Number.isInteger(v), 'أدخل العدد');
+          return { qty: v * QTY };
+        };
+      } else {
+        const a = moneyInput(entry?.item === 'cash' ? entry.amount : null);
+        box.append(field('النقدية الموجودة فعلاً مع المدير', a, 'يظهر الفرق عن المحسوب؛ أي عجز أو زيادة على المدير'));
+        read = () => {
+          const v = a.units();
+          need(v !== null, 'أدخل المبلغ');
+          return { amount: v };
+        };
+      }
+    };
+    const kinds = chips(
+      [
+        { value: 'birds', label: 'عدد الطيور' },
+        { value: 'cash', label: 'النقدية مع المدير' },
+      ],
+      kind,
+      (v) => {
+        kind = v;
+        build();
+      },
+    );
+    build();
+    body.append(
+      err,
+      entry ? null : kinds,
+      box,
+      field('التاريخ', date),
+      field('ملاحظة', note),
+      saveButton(
+        'حفظ',
+        async () => {
+          await commitEntry(clean({ kind: 'poultry.count', cycleId, date: date.value, item: kind, ...read(), note: note.value.trim() }), entry);
+          toast('تم الحفظ');
+          close();
+        },
+        err,
+      ),
+    );
+  });
+}
+
+// ---------- إدخال شهر كامل (زي جدول الإكسيل) ----------
+export function monthBatchForm(cycleId, { month = null } = {}) {
+  openSheet('إدخال حسابات شهر', (body, close) => {
+    const err = errorBox();
+    const m = monthSelect(month || ctx.nowMonth());
+    const defDate = (ym) => (lastDayOf(ym) < ctx.today() ? lastDayOf(ym) : ctx.today());
+    const date = dateInput(defDate(m.value));
+    let dateTouched = false;
+    date.addEventListener('change', () => (dateTouched = true));
+    m.addEventListener('change', () => {
+      if (!dateTouched) date.value = defDate(m.value);
+    });
+    const salesBox = h('div', { class: 'lines' });
+    const expBox = h('div', { class: 'lines' });
+    const summary = h('div', { class: 'line-summary' });
+    const sales = [];
+    const exps = [];
+    const saleOptions = [...grades().map((g) => ({ value: `eggs:${g.id}`, label: `بيض ${g.name}` })), { value: 'bags', label: 'شكاير' }, { value: 'manure', label: 'سبلة' }, { value: 'birds', label: 'طيور (لحم) بالكيلو' }, { value: 'other', label: 'إيراد آخر' }];
+    const recalc = () => {
+      let s = 0;
+      let x = 0;
+      for (const r of sales) s += r.amount() || 0;
+      for (const r of exps) x += r.amount() || 0;
+      summary.textContent = `المبيعات ${F.money(s)} − المصروفات ${F.money(x)} = ${F.money(s - x)}`;
+      summary.className = `line-summary ${s - x >= 0 ? 'pos' : 'neg'}`;
+    };
+    const lineFor = (list, boxEl, { kindSel, unitHint }) => {
+      const q = qtyInput();
+      const p = moneyInput();
+      const a = moneyInput();
+      const note = textInput('', 'ملاحظة');
+      q.placeholder = unitHint;
+      p.placeholder = 'السعر';
+      a.placeholder = 'المبلغ';
+      const r = {
+        kindSel,
+        q,
+        p,
+        a,
+        note,
+        amount: () => {
+          const qu = q.units();
+          const pu = p.units();
+          return qu && pu ? lineAmount(qu, pu) : a.units();
+        },
+      };
+      const sync = () => {
+        const qu = q.units();
+        const pu = p.units();
+        if (qu && pu) a.setUnits(lineAmount(qu, pu));
+        a.readOnly = !!(qu && pu);
+        recalc();
+      };
+      for (const el of [q, p, a]) el.addEventListener('input', sync);
+      const line = h('div', { class: 'line' }, kindSel, h('div', { class: 'grid3' }, q, p, a), note, h('button', { type: 'button', class: 'rm', 'aria-label': 'حذف السطر', text: '×', onclick: () => (list.splice(list.indexOf(r), 1), line.remove(), recalc()) }));
+      list.push(r);
+      boxEl.append(line);
+      return r;
+    };
+    const addSale = (v = 'eggs:normal') => lineFor(sales, salesBox, { kindSel: selectInput(saleOptions, v), unitHint: 'العدد' });
+    const addExp = (v = 'feed') => {
+      const sel = selectInput(cats().map((x) => ({ value: x.id, label: x.name })), v);
+      const r = lineFor(exps, expBox, { kindSel: sel, unitHint: 'الكمية' });
+      const hint = () => (r.q.placeholder = entity(ctx.state, 'poultry.category', sel.value)?.unit ? `الكمية (${entity(ctx.state, 'poultry.category', sel.value).unit})` : 'الكمية');
+      sel.addEventListener('change', hint);
+      hint();
+    };
+    addSale('eggs:normal');
+    addExp('feed');
+    recalc();
+    body.append(
+      err,
+      h('p', { class: 'muted small', text: 'سجّل كل مبيعات ومصروفات الشهر مرة واحدة. لكل سطر: العدد/الكمية × السعر، أو المبلغ فقط. الأسطر الفارغة تُتجاهل.' }),
+      h('div', { class: 'grid2' }, field('على حساب شهر', m), field('تاريخ التسجيل', date)),
+      h('h3', { class: 'section-title', text: 'المبيعات' }),
+      salesBox,
+      h('button', { type: 'button', class: 'btn small', text: '+ سطر بيع', onclick: () => addSale() }),
+      h('h3', { class: 'section-title', text: 'المصروفات' }),
+      expBox,
+      h('button', { type: 'button', class: 'btn small', text: '+ سطر مصروف', onclick: () => addExp('misc') }),
+      summary,
+      saveButton(
+        'حفظ كل الأسطر',
+        async () => {
+          const out = [];
+          const base = { cycleId, date: date.value, month: m.value };
+          sales.forEach((r, i) => {
+            const qu = r.q.units();
+            const pu = r.p.units();
+            const au = r.amount();
+            if (!r.q.value.trim() && !r.p.value.trim() && !r.a.value.trim()) return;
+            need(au && au > 0, `سطر البيع ${i + 1}: أدخل العدد والسعر أو المبلغ`);
+            const [prod, grade] = r.kindSel.value.split(':');
+            if (prod === 'eggs') need(qu && pu, `سطر البيع ${i + 1}: البيض يحتاج عدد الأطباق وسعر الطبق`);
+            const e = { kind: 'poultry.sale', ...base, product: prod, amount: au, note: r.note.value.trim() || undefined };
+            if (prod === 'eggs') Object.assign(e, { grade, qty: qu, price: pu });
+            else if (prod === 'birds') Object.assign(e, { weight: qu || undefined, price: pu || undefined });
+            else if (qu) Object.assign(e, { qty: qu, price: pu || undefined });
+            if (prod === 'other') need(e.note, `سطر البيع ${i + 1}: اكتب نوع الإيراد في الملاحظة`);
+            out.push(clean(e));
+          });
+          exps.forEach((r, i) => {
+            const qu = r.q.units();
+            const pu = r.p.units();
+            const au = r.amount();
+            if (!r.q.value.trim() && !r.p.value.trim() && !r.a.value.trim()) return;
+            need(au && au > 0, `سطر المصروف ${i + 1}: أدخل المبلغ`);
+            out.push(clean({ kind: 'poultry.expense', ...base, category: r.kindSel.value, amount: au, qty: qu && pu ? qu : undefined, price: qu && pu ? pu : undefined, note: r.note.value.trim() || undefined }));
+          });
+          need(out.length, 'لا توجد أسطر للحفظ');
+          await ctx.store.run((b) => b.addEntries(out));
+          toast(`تم حفظ ${out.length} سطر`);
+          close();
+        },
+        err,
+      ),
+    );
+  });
+}
+
+// تعديل أي قيد دواجن بنموذجه.
+export function editPoultryEntry(e) {
+  const map = {
+    'poultry.expense': () => expenseForm(e.cycleId, { entry: e }),
+    'poultry.sale': () => saleForm(e.cycleId, { entry: e }),
+    'poultry.payment': () => paymentForm(e.cycleId, { entry: e }),
+    'poultry.log': () => logForm(e.cycleId, { entry: e }),
+    'poultry.count': () => countForm(e.cycleId, { entry: e }),
+    'poultry.shares': () => sharesForm(e.cycleId, { base: e }),
+  };
+  return map[e.kind] ? map[e.kind]() : null;
+}
+
+// إقفال/فتح شهر.
+export async function toggleMonthClose(cycleId, r) {
+  const scope = `poultry:${cycleId}`;
+  if (r.closed) {
+    const reason = await confirmDialog({ title: `فتح شهر ${F.month(r.month)}`, message: 'فتح الشهر يسمح بتعديل قيوده. سجّل السبب.', okText: 'فتح الشهر', input: { label: 'السبب', required: true } });
+    if (!reason) return;
+    await ctx.store.run((b) => b.dispatch('month.reopen', { scope, month: r.month, reason }));
+    toast('تم فتح الشهر');
+    return;
+  }
+  const ok = await confirmDialog({ title: `إقفال شهر ${F.month(r.month)}`, message: `بعد الإقفال لا يُضاف ولا يُعدَّل أي قيد على حساب هذا الشهر.\nالمبيعات ${F.money(r.sales)} · المصروفات ${F.money(r.expensesOurs)} · الصافي ${F.money(r.opNet + r.capNet)}`, okText: 'إقفال' });
+  if (!ok) return;
+  await ctx.store.run((b) => b.dispatch('month.close', { scope, month: r.month, totals: { sales: r.sales, expenses: r.expensesOurs, opNet: r.opNet, capNet: r.capNet, alloc: r.alloc } }));
+  toast('تم إقفال الشهر');
+}
+
+export { formatShare };
