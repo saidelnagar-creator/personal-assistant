@@ -18,7 +18,7 @@ export function entryScreen({ id }) {
   const cycle = e.cycleId ? ctx.state.entities.get('poultry.cycle')?.get(e.cycleId) : null;
   return {
     title: d.label,
-    subtitle: cycle ? cycle.name : '',
+    subtitle: cycle ? cycle.name : mod?.entrySubtitle?.(e) || '',
     body: h(
       'div',
       {},
@@ -28,9 +28,9 @@ export function entryScreen({ id }) {
         { class: 'card' },
         kv('البيان', d.title, '', { secret: false }),
         d.amount ? kv('المبلغ', F.money(d.amount), d.sign > 0 ? 'pos' : d.sign < 0 ? 'neg' : '', { pg: 'entries' }) : null,
-        kv('التاريخ الفعلي', F.date(e.date), '', { secret: false }),
+        kv('التاريخ الفعلي', e.dateUnknown ? 'غير معروف' : F.date(e.date), '', { secret: false }),
         e.month ? kv('على حساب شهر', F.month(e.month), '', { secret: false }) : null,
-        e.qty && e.kind !== 'poultry.count' ? kv('الكمية', F.qty(e.qty), '', { secret: false }) : null,
+        e.qty && e.kind.startsWith('poultry.') && e.kind !== 'poultry.count' ? kv('الكمية', F.qty(e.qty), '', { secret: false }) : null,
         e.weight ? kv('الوزن (كجم)', F.qty(e.weight), '', { secret: false }) : null,
         e.price ? kv('سعر الوحدة', F.money(e.price), '', { pg: 'entries' }) : null,
         e.capital ? kv('رأسمالي', 'نعم', '', { secret: false }) : null,
@@ -39,6 +39,7 @@ export function entryScreen({ id }) {
         kv('سُجّل في', F.dateTime(e.ts), '', { secret: false }),
         e.qty && e.kind === 'poultry.count' ? kv('العدد', F.num(e.qty / QTY), '', { secret: false }) : null,
       ),
+      mod?.entryDetails?.(e) || null,
       original ? h('div', {}, sectionTitle('القيد الأصلي قبل التعديل'), entryRow(original)) : null,
       replaced ? h('div', {}, sectionTitle('القيد بعد التعديل'), entryRow(replaced)) : null,
       e.voided

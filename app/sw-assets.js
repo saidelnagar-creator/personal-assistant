@@ -1,5 +1,5 @@
 // ملف مولَّد — لا تعدّله يدوياً. التوليد: npm run sw:assets
-self.__ASSETS_VERSION = '950b68c3ae00';
+self.__ASSETS_VERSION = '9d5d589a5d90';
 self.__ASSETS = [
  "./",
  "./css/app.css",
@@ -17,6 +17,10 @@ self.__ASSETS = [
  "./src/core/drive.js",
  "./src/core/engine.js",
  "./src/core/migrations/index.js",
+ "./src/core/modules/car/calc.js",
+ "./src/core/modules/car/config.js",
+ "./src/core/modules/car/index.js",
+ "./src/core/modules/car/schedule.js",
  "./src/core/modules/common.js",
  "./src/core/modules/index.js",
  "./src/core/modules/poultry/calc.js",
@@ -38,6 +42,10 @@ self.__ASSETS = [
  "./src/ui/ctx.js",
  "./src/ui/dom.js",
  "./src/ui/forms-common.js",
+ "./src/ui/modules/car/fmt.js",
+ "./src/ui/modules/car/forms.js",
+ "./src/ui/modules/car/index.js",
+ "./src/ui/modules/car/screens.js",
  "./src/ui/modules/index.js",
  "./src/ui/modules/poultry/forms.js",
  "./src/ui/modules/poultry/index.js",
