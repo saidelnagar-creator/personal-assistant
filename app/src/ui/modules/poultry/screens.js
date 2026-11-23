@@ -4,10 +4,10 @@ import { ctx, F } from '../../ctx.js';
 import { badge, chips, empty, kv, list, monthSelect, row, sectionTitle, stat, table } from '../../components.js';
 import { entryList, signClass, ui } from '../../widgets.js';
 import { entity, listEntities } from '../../../core/engine.js';
-import { QTY } from '../../../core/money.js';
+import { QTY, mulDiv } from '../../../core/money.js';
 import { addMonths } from '../../../core/util.js';
 import { CYCLE_STATUS, PRODUCTS, EGGS_PER_TRAY } from '../../../core/modules/poultry/config.js';
-import { aggregateMonths, cycleData, monthKpis, periodStats, personStatement, settlementPlan } from '../../../core/modules/poultry/calc.js';
+import { aggregateMonths, categoryMonths, cycleData, kgPerUnit, monthKpis, periodStats, personStatement, settlementPlan } from '../../../core/modules/poultry/calc.js';
 import { countForm, cycleForm, expenseForm, guestForm, logForm, monthBatchForm, paymentForm, recordSettlement, saleForm, sharesForm, toggleMonthClose } from './forms.js';
 import { personName } from '../../forms-common.js';
 
@@ -16,6 +16,89 @@ const st = (label, value, o = {}) => stat(label, value, { pg: PG, ...o });
 const statusBadge = (c) => badge(CYCLE_STATUS[c.status || 'active'], c.status === 'closed' ? '' : c.status === 'sold' ? 'warn' : 'ok');
 const trays = (u) => `${F.qty(u, { decimals: 0 })} طبق`;
 const perTray = (u) => (u === null ? '—' : `${F.money(u, { decimals: 2 })} ج/طبق`);
+
+// ---------- أدوات التقارير: العلف والإنتاج والمقارنة ----------
+const catOf = (id) => entity(ctx.state, 'poultry.category', id);
+const feedUnit = () => catOf('feed')?.unit || '';
+const feedKg = () => kgPerUnit(feedUnit());
+const round = (x, d = 0) => Math.round(x * 10 ** d) / 10 ** d;
+const qtyU = (u, unit, d = 2) => `${F.qty(u, { decimals: d })}${unit ? ` ${unit}` : ''}`;
+const fmtKg = (x) => (x === null ? '—' : `${F.num(round(x, x < 100 ? 1 : 0))} كجم`);
+const fmtG = (x) => (x === null ? '—' : `${F.num(round(x))} جم`);
+const unitAvg = (v) => (v.qty ? mulDiv(v.qtyGross, QTY, v.qty) : null);
+// الاستهلاك اليومي بالكيلو لو الوحدة معروفة، وإلا بوحدة البند.
+const feedDaily = (k) => (k.feedKgPerDay !== null ? fmtKg(k.feedKgPerDay) : k.feedPerDay !== null ? `${F.num(round(k.feedPerDay, 3))} ${feedUnit()}` : '—');
+
+// كارت العلف لشهر أو فترة (k = monthKpis).
+function feedCard(k, { note = true } = {}) {
+  if (!k.feedQty && !k.feedMeasured && !k.feedNoQty) return null;
+  const unit = feedUnit();
+  return h(
+    'div',
+    { class: 'card' },
+    kv('العلف المشترى', `${qtyU(k.feedQty, unit, 3)}${k.feedNoQty ? ` (+ ${F.num(k.feedNoQty)} مرة من غير كمية)` : ''}`, '', { secret: false }),
+    kv(`متوسط سعر ال${unit || 'وحدة'}`, k.feedAvg === null ? '—' : F.egp(k.feedAvg, { decimals: 0 }), '', { pg: PG }),
+    kv(`الاستهلاك اليومي ${!k.feedMeasured ? '(تقريبي من المشتريات)' : k.feedMeasuredDays < k.days ? `(من الجرد، ${F.num(k.feedMeasuredDays)} يوم من ${F.num(k.days)})` : '(من الجرد)'}`, `${feedDaily(k)} في اليوم`, '', { secret: false }),
+    k.feedGramsPerBird !== null ? kv('لكل طائر', `${fmtG(k.feedGramsPerBird)} في اليوم (على ~${F.num(Math.round(k.birds))} طائر)`, '', { secret: false }) : null,
+    k.feedPerTray !== null ? kv('علف لكل طبق مباع', fmtKg(k.feedPerTray), '', { secret: false }) : null,
+    note && !k.feedMeasured ? h('div', { class: 'muted small', text: 'التقريبي = المشترى ÷ عدد الأيام، ويتلخبط لو اشتريت كمية كبيرة مرة واحدة. سجّل «جرد ← العلف في المخزن» من وقت للتاني علشان يتحسب المستهلك فعلاً.' }) : null,
+  );
+}
+
+// كارت الإنتاج والنافق لشهر أو فترة.
+function productionCard(r, k) {
+  if (!k.birds && !k.trays && !k.deaths) return null;
+  return h(
+    'div',
+    { class: 'card' },
+    kv('عدد الطيور (تقريبي)', `${F.num(r.birdsStart)} أول الفترة · ${F.num(r.birdsEnd)} آخرها`, '', { secret: false }),
+    k.trays ? kv('الأطباق المباعة', `${F.qty(k.trays, { decimals: 0 })} طبق · ${F.num(round(k.trayPerDay, 1))} في اليوم`, '', { secret: false }) : null,
+    r.producedTrays ? kv('الإنتاج المسجل', `${F.qty(r.producedTrays, { decimals: 0 })} طبق · ${F.num(round(k.producedPerDay, 1))} في اليوم`, '', { secret: false }) : null,
+    k.layRate !== null ? kv(`نسبة الإنتاج ${k.producedFromLog ? '(من الإنتاج المسجل)' : '(من المباع)'}`, F.pct(k.layRate), '', { secret: false }) : null,
+    kv('النافق', `${F.num(k.deaths)}${k.mortality !== null ? ` · ${F.pct(k.mortality, 2)} من الطيور` : ''}`, '', { secret: false }),
+  );
+}
+
+// مقارنة شهر بالشهر اللي قبله.
+function compareTable(r, prev, kg) {
+  const a = monthKpis(r, { kg });
+  const b = monthKpis(prev, { kg });
+  const line = (label, x, y, fmt, { pct = true, diffFmt = null } = {}) => {
+    const ok = (v) => v !== null && v !== undefined && Number.isFinite(v);
+    let diff = '—';
+    if (ok(x) && ok(y)) {
+      const d = x - y;
+      const arrow = d > 0 ? '▲' : d < 0 ? '▼' : '=';
+      diff = d === 0 ? '=' : `${arrow} ${(diffFmt || fmt)(Math.abs(d))}${pct && y ? ` (${F.pct(Math.abs(d / y), 0)})` : ''}`;
+    }
+    return [label, ok(x) ? fmt(x) : '—', ok(y) ? fmt(y) : '—', diff];
+  };
+  const m = (u) => F.money(u, { decimals: 0 });
+  const unit = feedUnit();
+  const rows = [
+    line('المبيعات', r.sales, prev.sales, m),
+    line('المصروفات', r.expensesOurs, prev.expensesOurs, m),
+    line('الصافي', r.opNet + r.capNet, prev.opNet + prev.capNet, m),
+    line('الأطباق المباعة', a.trays || null, b.trays || null, (u) => F.qty(u, { decimals: 0 })),
+    line('متوسط سعر الطبق', a.eggAvg, b.eggAvg, (u) => F.money(u, { decimals: 2 })),
+    line('تكلفة الطبق', a.costPerTray, b.costPerTray, (u) => F.money(u, { decimals: 2 })),
+    line(`العلف (${unit || 'كمية'})`, a.feedQty || null, b.feedQty || null, (u) => F.qty(u, { decimals: 2 })),
+    line(`سعر ال${unit || 'وحدة'}`, a.feedAvg, b.feedAvg, m),
+    line('علف كجم/يوم', a.feedKgPerDay, b.feedKgPerDay, (x) => F.num(round(x))),
+    line('جم/طائر/يوم', a.feedGramsPerBird, b.feedGramsPerBird, (x) => F.num(round(x))),
+    line('نسبة الإنتاج', a.layRate, b.layRate, (x) => F.pct(x), { pct: false }),
+    line('النافق', a.deaths, b.deaths, (x) => F.num(x)),
+  ].filter((x) => x[1] !== '—' || x[2] !== '—');
+  return table([{ label: 'البيان' }, { label: 'الشهر ده', num: true }, { label: 'اللي فات', num: true }, { label: 'الفرق', num: true }], rows, { pg: PG });
+}
+
+// البنود ذات الوحدة: تنبيه بالقيود اللي اتسجلت من غير كمية (لا تدخل مجموع الكميات ولا متوسط السعر).
+function noQtyNote(byCategory) {
+  const parts = Object.entries(byCategory)
+    .filter(([id, v]) => v.noQty && catOf(id)?.unit)
+    .map(([id, v]) => `${catOf(id).name}: ${F.num(v.noQty)} مرة`);
+  return parts.length ? h('div', { class: 'banner info', text: `⚠️ مشتريات من غير كمية (${parts.join('، ')}) — مش داخلة في مجموع الكميات ولا متوسط السعر. افتح القيد وعدّله واكتب الكمية.` }) : null;
+}
 
 export function cyclesScreen() {
   const cycles = listEntities(ctx.state, 'poultry.cycle').sort((a, b) => b.startDate.localeCompare(a.startDate));
@@ -307,12 +390,14 @@ function partnersTab(c, d) {
 function kpisTab(c, d) {
   const settled = d.months.filter((r) => r.phase === 'regular' && r.count);
   const withData = d.months.filter((r) => r.count);
-  const f = ui(`poultry-kpi-${c.id}`, { from: settled[0]?.month || withData[0]?.month || ctx.nowMonth(), to: withData[withData.length - 1]?.month || ctx.nowMonth() });
+  const f = ui(`poultry-kpi-${c.id}`, { from: settled[0]?.month || withData[0]?.month || ctx.nowMonth(), to: withData[withData.length - 1]?.month || ctx.nowMonth(), cat: 'feed' });
   const fromSel = monthSelect(f.from);
   const toSel = monthSelect(f.to);
   fromSel.addEventListener('change', () => ((f.from = fromSel.value), ctx.refresh()));
   toSel.addEventListener('change', () => ((f.to = toSel.value), ctx.refresh()));
-  const p = periodStats(d, f.from, f.to);
+  const kg = feedKg();
+  const unit = feedUnit();
+  const p = periodStats(d, f.from, f.to, { kg });
   const catTotal = Object.values(p.byCategory).reduce((s, x) => s + x, 0);
   const catRows = Object.entries(p.byCategory)
     .filter(([, v]) => v)
@@ -321,9 +406,17 @@ function kpisTab(c, d) {
   const monthRows = d.months
     .filter((r) => r.month >= f.from && r.month <= f.to && r.count)
     .map((r) => {
-      const k = monthKpis(r);
-      return [(r.lay ? '🐣 ' : r.pre ? '🏗️ ' : '') + F.monthShort(r.month) + ' ' + r.month.slice(2, 4), F.qty(k.trays, { decimals: 0 }), k.eggAvg === null ? '—' : F.money(k.eggAvg, { decimals: 1 }), k.costPerTray === null ? '—' : F.money(k.costPerTray, { decimals: 1 }), F.qty(k.feedQty, { decimals: 2 }), k.feedPerTray === null ? '—' : F.num(Math.round(k.feedPerTray * 100) / 100), F.money(r.opNet + r.capNet, { decimals: 0 })];
+      const k = monthKpis(r, { kg });
+      return [monthTag(r), F.qty(k.trays, { decimals: 0 }), k.eggAvg === null ? '—' : F.money(k.eggAvg, { decimals: 1 }), k.costPerTray === null ? '—' : F.money(k.costPerTray, { decimals: 1 }), F.qty(k.feedQty, { decimals: 2 }), k.feedPerTray === null ? '—' : F.num(Math.round(k.feedPerTray * 100) / 100), F.money(r.opNet + r.capNet, { decimals: 0 })];
     });
+  const opsRows = d.months
+    .filter((r) => r.month >= f.from && r.month <= f.to && r.count)
+    .map((r) => {
+      const k = monthKpis(r, { kg });
+      const approx = k.feedPerDay !== null && !k.feedMeasured ? '~' : '';
+      return [monthTag(r), k.feedPerDay === null ? '—' : approx + feedDaily(k).replace(' كجم', ''), k.feedGramsPerBird === null ? '—' : approx + F.num(round(k.feedGramsPerBird)), k.feedAvg === null ? '—' : F.money(k.feedAvg, { decimals: 0 }), k.layRate === null ? '—' : F.pct(k.layRate, 0), F.num(k.deaths)];
+    })
+    .filter((x) => x.slice(1).some((v) => v !== '—' && v !== '0' && v !== '٠'));
   return h(
     'div',
     {},
@@ -334,16 +427,83 @@ function kpisTab(c, d) {
       st('الأطباق المباعة', F.qty(p.trays, { decimals: 0 }), { hint: p.traysPerDay ? `${F.num(Math.round(p.traysPerDay * 10) / 10)} طبق/يوم · إنتاج تقريبي ${F.num(Math.round(((p.traysPerDay * EGGS_PER_TRAY) / Math.max(1, d.birds.now || c.birds || 1)) * 1000) / 10)}%` : '' }),
       st('متوسط سعر الطبق (ج)', p.eggAvg === null ? '—' : F.money(p.eggAvg, { decimals: 2 })),
       st('تكلفة الطبق = التعادل (ج)', p.costPerTray === null ? '—' : F.money(p.costPerTray, { decimals: 2 }), { hint: p.eggAvg && p.costPerTray ? `الهامش ${F.money(p.eggAvg - p.costPerTray, { decimals: 2 })} ج/طبق` : '' }),
-      st('العلف (طن)', F.qty(p.feedQty, { decimals: 2 }), { hint: p.feedAvg ? `متوسط ${F.money(p.feedAvg, { decimals: 0 })} ج/طن${p.feedPerTray ? ` · ${F.num(Math.round(p.feedPerTray * 100) / 100)} كجم/طبق` : ''}` : '' }),
+      st(`العلف${unit ? ` (${unit})` : ''}`, F.qty(p.feedQty, { decimals: 2 }), { hint: [p.k && p.k.feedPerDay !== null ? `${feedDaily(p.k)}/يوم` : '', p.feedAvg ? `متوسط ${F.money(p.feedAvg, { decimals: 0 })} ج/${unit || 'وحدة'}` : '', p.feedPerTray ? `${F.num(round(p.feedPerTray * (kg || 1000) / 1000, 2))} كجم/طبق` : ''].filter(Boolean).join(' · ') }),
       st('صافي الفترة', F.money(p.opNet + p.capNet, { decimals: 0 }), { valueClass: signClass(p.opNet + p.capNet), hint: p.avgMonthlyNet !== null ? `متوسط الشهر ${F.money(p.avgMonthlyNet, { decimals: 0 })} · ${F.num(p.months)} شهر` : '' }),
       st('المبيعات', F.money(p.sales, { decimals: 0 }), { hint: `المصروفات ${F.money(p.opExpenses, { decimals: 0 })}` }),
     ),
     Object.keys(p.byGrade).length
       ? h('div', {}, sectionTitle('البيض حسب النوع'), table([{ label: 'النوع' }, { label: 'أطباق', num: true }, { label: 'المبلغ', num: true }, { label: 'متوسط', num: true }], Object.entries(p.byGrade).map(([g, v]) => [entity(ctx.state, 'poultry.grade', g)?.name || g, F.qty(v.qty, { decimals: 0 }), F.money(v.amount, { decimals: 0 }), F.money(Math.round((v.amount * QTY) / v.qty), { decimals: 1 })]), { pg: PG }))
       : null,
-    catRows.length ? h('div', {}, sectionTitle('المصروفات حسب البند (حصتنا)'), table([{ label: 'البند' }, { label: 'المبلغ', num: true }, { label: 'النسبة', num: true }], catRows, { pg: PG })) : null,
-    monthRows.length ? h('div', {}, sectionTitle('شهر بشهر'), table([{ label: 'الشهر' }, { label: 'أطباق', num: true }, { label: 'سعر', num: true }, { label: 'تكلفة', num: true }, { label: 'علف طن', num: true }, { label: 'كجم/طبق', num: true }, { label: 'الصافي', num: true }], monthRows, { pg: PG })) : null,
+    p.k && feedCard(p.k) ? h('div', {}, sectionTitle('العلف'), feedCard(p.k)) : null,
+    feedStockSection(d),
+    p.k && productionCard(p.agg, p.k) ? h('div', {}, sectionTitle('الإنتاج والنافق'), productionCard(p.agg, p.k)) : null,
+    catRows.length ? h('div', {}, sectionTitle('المصروفات حسب البند (حصتنا)'), table([{ label: 'البند' }, { label: 'المبلغ', num: true }, { label: 'النسبة', num: true }], catRows, { pg: PG }), noQtyNote(p.catDetail)) : null,
+    categorySection(c, d, f),
+    monthRows.length ? h('div', {}, sectionTitle('شهر بشهر'), table([{ label: 'الشهر' }, { label: 'أطباق', num: true }, { label: 'سعر', num: true }, { label: 'تكلفة', num: true }, { label: `علف ${unit}`.trim(), num: true }, { label: 'كجم/طبق', num: true }, { label: 'الصافي', num: true }], monthRows, { pg: PG })) : null,
+    opsRows.length ? h('div', {}, sectionTitle('العلف والإنتاج شهر بشهر'), table([{ label: 'الشهر' }, { label: 'علف/يوم', num: true }, { label: 'جم/طائر', num: true }, { label: `سعر ال${unit || 'وحدة'}`, num: true }, { label: 'الإنتاج', num: true }, { label: 'النافق', num: true }], opsRows, { pg: PG }), h('p', { class: 'muted small', text: 'علف/يوم من الجرد لو متسجل في الشهر، وإلا تقريبي من المشتريات (المعلَّم بـ ~). الإنتاج = الأطباق × 30 ÷ الطيور ÷ الأيام.' })) : null,
     h('p', { class: 'muted small', text: 'تكلفة الطبق = مصروفات الشهر التشغيلية ÷ الأطباق المباعة = سعر التعادل. لو سعر البيع أعلى منها فالشهر مكسب.' }),
+  );
+}
+
+const monthTag = (r) => (r.lay ? '🐣 ' : r.pre ? '🏗️ ' : '') + F.monthShort(r.month) + ' ' + r.month.slice(2, 4);
+
+// جرد العلف: المخزون التقديري الآن (لو آخر جرد حديث)، والاستهلاك المقيس بين كل جردين.
+const STOCK_FRESH_DAYS = 45;
+function feedStockSection(d) {
+  const fd = d.feed;
+  const unit = feedUnit();
+  const kg = feedKg();
+  const add = h('button', { class: 'link', text: '+ جرد العلف', onclick: () => countForm(d.cycle.id, { item: 'feed' }) });
+  if (!fd.counts.length) return h('div', {}, sectionTitle('مخزن العلف', add), h('p', { class: 'muted small', text: 'سجّل الموجود في المخزن من وقت للتاني (جرد ← العلف في المخزن): من جردين ورا بعض والمشتريات بينهم يتحسب الاستهلاك الفعلي، والباقي في المخزن، ويكفي كام يوم.' }));
+  const s = fd.stock;
+  const per = (x) => (kg ? fmtKg((x / QTY) * kg) : `${F.num(round(x / QTY, 3))} ${unit}`);
+  const rows = fd.intervals
+    .slice()
+    .reverse()
+    .map((iv) => {
+      const birds = (d.birdsAt(iv.from) + d.birdsAt(iv.to)) / 2;
+      const g = kg && birds ? ((iv.perDay / QTY) * kg * 1000) / birds : null;
+      return [`${F.date(iv.from)} ← ${F.date(iv.to)}`, F.num(iv.days), F.qty(iv.used, { decimals: 2 }), per(iv.perDay).replace(' كجم', ''), g === null ? '—' : F.num(round(g))];
+    });
+  return h(
+    'div',
+    {},
+    sectionTitle('مخزن العلف', add),
+    s
+      ? h(
+          'div',
+          { class: 'card' },
+          kv(`آخر جرد (${F.date(s.date)})`, qtyU(s.counted, unit, 3), '', { secret: false }),
+          s.boughtSince ? kv('اتشرى بعده', qtyU(s.boughtSince, unit, 3), '', { secret: false }) : null,
+          s.estimate !== null && s.days <= STOCK_FRESH_DAYS ? kv('الموجود دلوقتي (تقديري)', `${qtyU(Math.round(s.estimate), unit, 2)}${s.daysLeft !== null ? ` · يكفي ~${F.num(Math.floor(s.daysLeft))} يوم` : ''}`, '', { secret: false }) : null,
+          s.rate !== null ? kv('آخر استهلاك مقيس', `${per(s.rate)} في اليوم`, '', { secret: false }) : h('div', { class: 'muted small', text: 'محتاج جردين على الأقل علشان يتحسب الاستهلاك الفعلي.' }),
+          s.days > STOCK_FRESH_DAYS && (d.cycle.status || 'active') === 'active' ? h('div', { class: 'muted small', text: `آخر جرد من ${F.num(s.days)} يوم — سجّل جرد جديد علشان يظهر الموجود دلوقتي ويكفي كام يوم.` }) : null,
+        )
+      : null,
+    rows.length ? table([{ label: 'الفترة' }, { label: 'أيام', num: true }, { label: `المستهلك ${unit}`.trim(), num: true }, { label: kg ? 'كجم/يوم' : `${unit}/يوم`, num: true }, { label: 'جم/طائر', num: true }], rows, { pg: PG }) : null,
+  );
+}
+
+// كل بند شهراً بشهر: الكمية ومتوسط السعر والمبلغ، ومجموعها.
+function categorySection(c, d, f) {
+  const present = new Set();
+  for (const r of d.months) if (r.month >= f.from && r.month <= f.to) for (const [id, v] of Object.entries(r.byCategory)) if (v.entries) present.add(id);
+  if (!present.size) return null;
+  const opts = listEntities(ctx.state, 'poultry.category', { archived: true })
+    .filter((x) => present.has(x.id))
+    .sort((a, b) => (a.order ?? 50) - (b.order ?? 50))
+    .map((x) => ({ value: x.id, label: x.name }));
+  const cat = present.has(f.cat) ? f.cat : opts[0].value;
+  const unit = catOf(cat)?.unit || '';
+  const { rows, total } = categoryMonths(d, cat, f.from, f.to);
+  const body = rows.map((r) => [monthTag(r), r.qty ? F.qty(r.qty, { decimals: 3 }) : r.noQty ? '؟' : '', r.avg === null ? '' : F.money(r.avg, { decimals: 0 }), F.money(r.gross, { decimals: 0 })]);
+  return h(
+    'div',
+    {},
+    sectionTitle('كل بند شهر بشهر'),
+    chips(opts, cat, (v) => ((f.cat = v), ctx.refresh())),
+    table([{ label: 'الشهر' }, { label: unit ? `الكمية (${unit})` : 'الكمية', num: true }, { label: unit ? `سعر ال${unit}` : 'سعر الوحدة', num: true }, { label: 'المبلغ', num: true }], body, { totalRow: ['المجموع', total.qty ? F.qty(total.qty, { decimals: 3 }) : '', total.avg === null ? '' : F.money(total.avg, { decimals: 0 }), F.money(total.gross, { decimals: 0 })], pg: PG }),
+    total.noQty && unit ? h('p', { class: 'muted small', text: `«؟» = ${F.num(total.noQty)} مرة اتسجلت من غير كمية (${F.money(total.noQtyAmount, { decimals: 0 })} ج) ومش داخلة في مجموع الكمية ولا متوسط السعر.` }) : null,
   );
 }
 
@@ -371,13 +531,18 @@ export function periodScreen({ id, from, to }) {
   const rows = d.months.filter((x) => x.month >= from && x.month <= to);
   if (!rows.length || !rows.some((x) => x.count)) return { title: c.name, subtitle: periodLabel(from, to), body: h('div', {}, empty('لا توجد قيود في هذه الفترة'), actions(c, to)) };
   const r = aggregateMonths(rows);
-  const k = monthKpis(r);
+  const kg = feedKg();
+  const k = monthKpis(r, { kg });
+  const prev = single ? d.months.find((x) => x.month === addMonths(from, -1) && x.count) : null;
   const entries = d.entries.filter((e) => e.month && e.month >= from && e.month <= to);
   const phaseName = r.lay ? 'فترة البشاير (تُضاف للتأسيس)' : r.pre ? 'التربية (تأسيس)' : '';
   const salesRows = [];
   for (const [g, v] of Object.entries(r.eggs.byGrade)) salesRows.push([`بيض ${entity(ctx.state, 'poultry.grade', g)?.name || g}`, F.qty(v.qty, { decimals: 0 }), F.money(Math.round((v.amount * QTY) / v.qty), { decimals: 2 }), F.money(v.amount)]);
   for (const p of ['bags', 'manure', 'birds', 'other']) if (r[p].amount) salesRows.push([PRODUCTS[p].name, r[p].qty ? F.qty(r[p].qty, { decimals: 0 }) : '', '', F.money(r[p].amount)]);
-  const expRows = Object.entries(r.byCategory).map(([cat, v]) => [entity(ctx.state, 'poultry.category', cat)?.name || cat, v.qty ? F.qty(v.qty, { decimals: 3 }) : '', F.money(v.gross), F.money(v.amount)]);
+  const expRows = Object.entries(r.byCategory).map(([cat, v]) => {
+    const c = catOf(cat);
+    return [`${c?.name || cat}${c?.unit ? ` (${c.unit})` : ''}`, v.qty ? F.qty(v.qty, { decimals: 3 }) : '', unitAvg(v) === null ? '' : F.money(unitAvg(v), { decimals: 0 }), F.money(v.gross), F.money(v.amount)];
+  });
   return {
     title: c.name,
     subtitle: [single ? F.month(from) : periodLabel(from, to), phaseName, r.closed ? 'مقفول' : ''].filter(Boolean).join(' · '),
@@ -394,9 +559,11 @@ export function periodScreen({ id, from, to }) {
       r.lay ? h('p', { class: 'muted small', text: 'فترة البشاير: من أول البيض حتى انتظام الإنتاج. صرفها ودخلها يُحسبان معاً، والفرق يُضاف على التربية في «التأسيس»، ولا تدخل متوسطات الشهور المنتظمة.' }) : null,
       r.closed ? h('div', { class: 'banner info', text: `${single ? 'الشهر' : 'الفترة'} مقفول${single ? '' : 'ة'} — لا يُعدَّل إلا بعد الفتح.` }) : actions(c, to),
       salesRows.length ? h('div', {}, sectionTitle('المبيعات'), table([{ label: 'الصنف' }, { label: 'العدد', num: true }, { label: 'متوسط', num: true }, { label: 'المبلغ', num: true }], salesRows, { totalRow: ['الإجمالي', '', '', F.money(r.sales)], pg: PG })) : null,
-      expRows.length ? h('div', {}, sectionTitle('المصروفات'), table([{ label: 'البند' }, { label: 'الكمية', num: true }, { label: 'الإجمالي', num: true }, { label: 'حصتنا', num: true }], expRows, { totalRow: ['الإجمالي', '', F.money(r.expensesOurs + r.guestCost), F.money(r.expensesOurs)], pg: PG })) : null,
+      expRows.length ? h('div', {}, sectionTitle('المصروفات'), table([{ label: 'البند' }, { label: 'الكمية', num: true }, { label: 'سعر الوحدة', num: true }, { label: 'الإجمالي', num: true }, { label: 'حصتنا', num: true }], expRows, { totalRow: ['الإجمالي', '', '', F.money(r.expensesOurs + r.guestCost), F.money(r.expensesOurs)], pg: PG }), noQtyNote(r.byCategory)) : null,
+      feedCard(k) ? h('div', {}, sectionTitle('العلف'), feedCard(k)) : null,
+      productionCard(r, k) ? h('div', {}, sectionTitle('الإنتاج والنافق'), productionCard(r, k)) : null,
+      prev ? h('div', {}, sectionTitle(`مقارنة بشهر ${F.month(prev.month)}`), compareTable(r, prev, kg)) : null,
       r.alloc.length ? h('div', {}, sectionTitle('التوزيع على الشركاء'), table([{ label: 'الشريك' }, { label: 'النصيب', num: true }], r.alloc.map((a) => [personName(a.personId) + (a.via ? ` (تابع لـ ${personName(a.via)})` : ''), F.money(a.op + a.cap)]), { pg: PG })) : null,
-      r.deaths || r.producedTrays ? h('div', { class: 'card' }, r.deaths ? kv('النافق المسجل', F.num(r.deaths), '', { secret: false }) : null, r.producedTrays ? kv('الإنتاج المسجل', trays(r.producedTrays), '', { secret: false }) : null) : null,
       sectionTitle('القيود'),
       entryList(entries.slice().reverse()),
       h('button', { class: `btn block ${r.closed ? '' : 'primary'}`, style: { marginTop: '12px' }, text: r.closed ? 'فتح للتعديل' : single ? 'إقفال الشهر (تم التحاسب)' : 'إقفال الفترة (تم التحاسب)', onclick: () => toggleMonthClose(id, r) }),

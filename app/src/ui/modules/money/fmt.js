@@ -1,7 +1,7 @@
 // أدوات العرض المشتركة للسلف والجمعيات والأمانات والأسعار: الكمية بوحدتها، حقل الإدخال المناسب للوحدة، قائمة الأنواع.
 import { h } from '../../dom.js';
 import { ctx, F } from '../../ctx.js';
-import { badge, moneyInput, qtyInput, selectInput } from '../../components.js';
+import { badge, moneyInput, qtyInput, selectInput, selectOnFocus } from '../../components.js';
 import { MONEY, formatUnits, parseUnits } from '../../../core/money.js';
 import { addMonths, daysInMonth } from '../../../core/util.js';
 import { CURRENCIES, KARATS } from '../../../core/modules/money/config.js';
@@ -67,7 +67,7 @@ export function unitAmountInput(getUnit, value = null) {
     el.value = u === null || u === undefined ? '' : formatUnits(u, scale()).replace(/,/g, '');
   };
   if (value !== null && value !== undefined) el.setUnits(value);
-  el.addEventListener('focus', () => setTimeout(() => el.select(), 0));
+  selectOnFocus(el);
   return el;
 }
 

@@ -23,14 +23,14 @@ test('دورة كاملة: إنشاء، حصص، إدخال شهر، دفعة، 
     await sales.locator('.line').first().locator('input').nth(0).fill('600');
     await sales.locator('.line').first().locator('input').nth(1).fill('110');
     await b.getByRole('button', { name: '+ سطر بيع' }).click();
-    await sales.locator('.line').nth(1).locator('select').selectOption('eggs:double');
+    await page.getByRole('option', { name: 'بيض دبل' }).click();
     await sales.locator('.line').nth(1).locator('input').nth(0).fill('10');
     await sales.locator('.line').nth(1).locator('input').nth(1).fill('130');
     const exps = b.locator('.lines').nth(1);
     await exps.locator('.line').first().locator('input').nth(0).fill('4');
     await exps.locator('.line').first().locator('input').nth(1).fill('15000');
     await b.getByRole('button', { name: '+ سطر مصروف' }).click();
-    await exps.locator('.line').nth(1).locator('select').selectOption('labor');
+    await page.getByRole('option', { name: /أجرة العمال/ }).click();
     await exps.locator('.line').nth(1).locator('input').nth(2).fill('9000');
     assert.match(await b.locator('.line-summary').last().innerText(), /67,300.*69,000/);
     await b.getByRole('button', { name: 'حفظ كل الأسطر' }).click();
@@ -155,7 +155,7 @@ test('إضافة بيع أو شراء على فترة التأسيس أو الب
     let s = sheet(page);
     await s.getByRole('tab', { name: 'التأسيس' }).click();
     await s.getByLabel('الشهر', { exact: true }).selectOption('2025-08');
-    await s.getByLabel('المبلغ').fill('6000');
+    await s.getByLabel('الإجمالي').fill('6000');
     await s.getByRole('button', { name: 'حفظ' }).click();
     await page.waitForFunction(() => !document.querySelector('.sheet'));
     // بيع على فترة البشاير
@@ -184,7 +184,7 @@ test('إضافة بيع أو شراء على فترة التأسيس أو الب
     await s.locator('.closed-note').waitFor();
     await s.getByRole('button', { name: 'فتح للإضافة' }).click();
     await page.locator('.dialog').getByRole('button', { name: 'فتح' }).click();
-    await s.getByLabel('المبلغ').fill('500');
+    await s.getByLabel('الإجمالي').fill('500');
     await s.getByRole('button', { name: 'حفظ' }).click();
     await page.waitForFunction(() => !document.querySelector('.sheet'));
     assert.deepEqual(t.errors, []);

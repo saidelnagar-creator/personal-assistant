@@ -16,6 +16,34 @@ export function toast(message, kind = '') {
 }
 
 // ---------- نافذة سفلية ----------
+// على iPhone: لوحة المفاتيح وعجلة الاختيار تزحزحان الصفحة تحت النافذة الثابتة، وبعد إغلاقهما قد تبقى اللمسات
+// منزاحة عن العناصر الظاهرة (تلمس خانة فيُضغط زر بجوارها). العلاج: تثبيت الصفحة الخلفية طالما نافذة مفتوحة،
+// وإرجاع التمرير لمكانه عند خروج التركيز من الحقول.
+let scrollLocks = 0;
+let savedScroll = 0;
+function lockScroll() {
+  if (scrollLocks++ > 0) return;
+  savedScroll = window.scrollY || 0;
+  const b = document.body;
+  b.classList.add('sheet-open');
+  b.style.top = `-${savedScroll}px`;
+}
+function unlockScroll() {
+  if (scrollLocks === 0 || --scrollLocks > 0) return;
+  const b = document.body;
+  b.classList.remove('sheet-open');
+  b.style.top = '';
+  window.scrollTo(0, savedScroll);
+}
+if (typeof document !== 'undefined')
+  document.addEventListener('focusout', () => {
+    if (!scrollLocks) return;
+    setTimeout(() => {
+      const a = document.activeElement;
+      if (scrollLocks && !(a && a.matches?.('input,select,textarea')) && (window.scrollY || window.visualViewport?.offsetTop)) window.scrollTo(0, 0);
+    }, 80);
+  });
+
 const openSheets = [];
 export function openSheet(title, build, { onClose = null } = {}) {
   const body = h('div', { class: 'sheet-body' });
@@ -25,6 +53,7 @@ export function openSheet(title, build, { onClose = null } = {}) {
     if (i < 0) return;
     openSheets.splice(i, 1);
     backdrop.remove();
+    unlockScroll();
     if (onClose) onClose(result);
   };
   const entry = { close };
@@ -33,6 +62,7 @@ export function openSheet(title, build, { onClose = null } = {}) {
   backdrop.addEventListener('click', (e) => {
     if (e.target === backdrop) close();
   });
+  lockScroll();
   document.body.append(backdrop);
   openSheets.push(entry);
   build(body, close);
@@ -100,9 +130,24 @@ const plain = (units, scale) => {
   return (neg ? '-' : '') + Math.floor(abs / scale) + (fp ? '.' + String(fp).padStart(decimals, '0').replace(/0+$/, '') : '');
 };
 
+// تحديد النص عند التركيز لتسهيل الاستبدال — فقط لو الحقل ما زال هو المُركَّز، وبـ setSelectionRange لا select():
+// select() تنقل التركيز للحقل، فحقلان رُكّز عليهما في نفس اللحظة كانا يتبادلان التركيز بلا نهاية (الشاشة تعلق ولا يُكتب شيء).
+export function selectOnFocus(el) {
+  el.addEventListener('focus', () =>
+    setTimeout(() => {
+      if (document.activeElement !== el) return;
+      try {
+        el.setSelectionRange(0, el.value.length);
+      } catch {
+        /* بعض المتصفحات ترفض التحديد لنوع الحقل */
+      }
+    }, 0),
+  );
+  return el;
+}
+
 function numericInput(value, scale, parse, cls = '') {
-  const el = h('input', { type: 'text', inputMode: 'decimal', autocomplete: 'off', class: cls, value: plain(value, scale), enterKeyHint: 'done' });
-  el.addEventListener('focus', () => setTimeout(() => el.select(), 0));
+  const el = selectOnFocus(h('input', { type: 'text', inputMode: 'decimal', autocomplete: 'off', class: cls, value: plain(value, scale), enterKeyHint: 'done' }));
   el.units = () => (el.value.trim() === '' ? null : parse(el.value));
   el.setUnits = (u) => {
     el.value = plain(u, scale);
@@ -219,6 +264,59 @@ export function stat(label, value, { hint = '', cls = '', onclick = null, valueC
     h('div', { class: `value num ${hidden ? 'masked' : valueClass}`, text: hidden ? MASK : value }),
     hint ? h('div', { class: 'hint', text: hidden ? maskDigits(hint) : hint }) : null,
   );
+}
+
+// زر اختيار يفتح قائمة أزرار في نافذة (بدل <select> وعجلته على iPhone). options: [{value, label, hint?}].
+// el.value يقرأ/يغيّر الاختيار، وحدث change يُطلق عند الاختيار من القائمة.
+export function pickButton(options, value, { title = 'اختر', onChange = null, label = '' } = {}) {
+  let current = options.some((o) => o.value === value) ? value : options[0]?.value ?? '';
+  const text = h('span', { class: 'pick-label' });
+  const el = h('button', { type: 'button', class: 'pick-btn', 'aria-haspopup': 'dialog' }, text, h('span', { class: 'pick-caret', 'aria-hidden': 'true', text: '▾' }));
+  const sync = () => {
+    const o = options.find((x) => x.value === current);
+    text.textContent = o ? o.label : '';
+    el.setAttribute('aria-label', label ? `${label}: ${text.textContent}` : text.textContent);
+  };
+  Object.defineProperty(el, 'value', {
+    get: () => current,
+    set: (v) => {
+      current = v;
+      sync();
+    },
+  });
+  el.pick = () => pickOption(options, current, title).then((v) => {
+    if (v === null || v === current) return v;
+    current = v;
+    sync();
+    el.dispatchEvent(new Event('change'));
+    onChange?.(v);
+    return v;
+  });
+  el.addEventListener('click', () => el.pick());
+  sync();
+  return el;
+}
+
+// نافذة قائمة أزرار؛ تعيد القيمة المختارة أو null عند الإغلاق.
+export function pickOption(options, value, title = 'اختر') {
+  return new Promise((resolve) => {
+    let picked = null;
+    openSheet(
+      title,
+      (body, close) => {
+        body.append(
+          h(
+            'div',
+            { class: 'pick-list', role: 'listbox' },
+            options.map((o) =>
+              h('button', { type: 'button', class: `pick-opt ${o.value === value ? 'on' : ''}`, role: 'option', 'aria-selected': o.value === value, onclick: () => ((picked = o.value), close()) }, h('span', { text: o.label }), o.hint ? h('span', { class: 'hint', text: o.hint }) : null),
+            ),
+          ),
+        );
+      },
+      { onClose: () => resolve(picked) },
+    );
+  });
 }
 
 export function chips(options, value, onchange) {
