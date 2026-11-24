@@ -1348,3 +1348,114 @@ details.more-tasks summary {
   outline: 2px solid var(--primary);
   outline-offset: 1px;
 }
+
+/* ---------- النوافذ على iPhone: تثبيت الصفحة الخلفية (انظر lockScroll في components.js) ---------- */
+body.sheet-open {
+  position: fixed;
+  left: 0;
+  right: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
+/* ---------- زر الاختيار وقائمة الأزرار (بدل select) ---------- */
+.pick-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: inherit;
+  padding: 6px 10px;
+  font-size: 16px;
+  font-weight: 700;
+  text-align: start;
+}
+.field .pick-btn {
+  min-height: var(--tap);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 17px;
+}
+.pick-caret {
+  color: var(--muted);
+  font-size: 14px;
+}
+.pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pick-opt {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: inherit;
+  font-weight: 600;
+  text-align: start;
+}
+.pick-opt.on {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+.pick-opt .hint {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+/* سطور إدخال الشهر: عناوين صغيرة فوق الخانات، والبند بلا وحدة = الإجمالي بس */
+.line .grid3.labels {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+.line .grid3.labels + .grid3 {
+  margin-top: 2px;
+}
+.line.no-qty .grid3 {
+  grid-template-columns: 1fr;
+}
+.line.no-qty .q,
+.line.no-qty .p {
+  display: none;
+}
+.line input.auto,
+.field input.auto {
+  background: var(--bg);
+  color: var(--muted);
+  border-style: dashed;
+}
+
+/* مراجعة سعر الوحدة */
+.price-review {
+  margin: 6px 0 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--bg);
+  border: 1px dashed var(--line);
+  font-size: 14px;
+}
+.price-review .big {
+  font-weight: 800;
+}
+.price-review.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.price-review .warn-line {
+  font-weight: 800;
+  margin-top: 4px;
+}

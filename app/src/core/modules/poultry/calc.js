@@ -16,7 +16,8 @@
 import { activeEntries, entity } from '../../engine.js';
 import { allocate } from '../../shares.js';
 import { QTY, mulDiv } from '../../money.js';
-import { addMonths, cmp, daysBetween, daysInMonth, lastDayOf, monthsRange, todayISO, ymOf } from '../../util.js';
+import { addDays, addMonths, cmp, daysBetween, daysInMonth, lastDayOf, monthsRange, todayISO, ymOf } from '../../util.js';
+import { EGGS_PER_TRAY, KG_PER_UNIT, PRICE_CHECK } from './config.js';
 
 export const scopeOf = (cycleId) => `poultry:${cycleId}`;
 const byDate = (a, b) => cmp(a.date, b.date) || cmp(a.ts, b.ts);
@@ -77,6 +78,11 @@ const blankMonth = (month) => ({
   capNet: 0,
   deaths: 0,
   producedTrays: 0,
+  days: 0, // أيام الشهر داخل عمر الدورة (للمعدلات اليومية)
+  birdsStart: 0, // عدد الطيور أول الشهر وآخره (تقريبي: آخر جرد − النافق − المباع)
+  birdsEnd: 0,
+  feedMeasured: 0, // استهلاك العلف المقيس من الجرد (بوحدة البند ×1000) داخل الشهر
+  feedMeasuredDays: 0, // الأيام التي يغطيها الجرد
   count: 0, // عدد القيود
   alloc: [], // [{ personId, via, op, cap }]
   unallocated: false,
@@ -97,6 +103,46 @@ function subVia(p, head) {
   if (!r) p.subVia.set(head, (r = { paid: 0, received: 0, op: 0, cap: 0 }));
   return r;
 }
+
+const blankCat = () => ({ amount: 0, gross: 0, qty: 0, qtyGross: 0, entries: 0, noQty: 0, noQtyAmount: 0 });
+
+// عدد الأيام المشتركة بين فترتين [a1, a2] و[b1, b2] (شاملة الطرفين).
+function overlapDays(a1, a2, b1, b2) {
+  const lo = a1 > b1 ? a1 : b1;
+  const hi = a2 < b2 ? a2 : b2;
+  return hi < lo ? 0 : daysBetween(lo, hi) + 1;
+}
+
+// استهلاك العلف من الجرد: بين كل جردين متتاليين، المستهلك = الموجود في الأول + المشترى بعده حتى الثاني − الموجود في الثاني.
+// المشترى = مصروفات بند العلف ذات الكمية بتاريخها الفعلي. المخزون الحالي التقديري = آخر جرد + المشترى بعده − آخر معدل مقيس × الأيام.
+export function feedUsage(entries, feedCounts, today = todayISO()) {
+  const buys = entries.filter((e) => e.kind === 'poultry.expense' && e.category === 'feed' && e.qty);
+  const boughtBetween = (a, b) => buys.reduce((s, e) => s + (e.date > a && e.date <= b ? e.qty : 0), 0);
+  const counts = feedCounts.slice().sort((a, b) => cmp(a.date, b.date) || cmp(a.ts, b.ts));
+  const intervals = [];
+  for (let i = 1; i < counts.length; i++) {
+    const a = counts[i - 1];
+    const b = counts[i];
+    const days = daysBetween(a.date, b.date);
+    if (days <= 0) continue;
+    const bought = boughtBetween(a.date, b.date);
+    const used = a.qty + bought - b.qty;
+    intervals.push({ from: a.date, to: b.date, days, start: a.qty, end: b.qty, bought, used, perDay: used / days });
+  }
+  const lastCount = counts[counts.length - 1] || null;
+  let stock = null;
+  if (lastCount && lastCount.date <= today) {
+    const since = boughtBetween(lastCount.date, today);
+    const rate = intervals.length ? intervals[intervals.length - 1].perDay : null;
+    const days = daysBetween(lastCount.date, today);
+    const est = rate !== null && rate > 0 ? Math.max(0, lastCount.qty + since - rate * days) : null;
+    stock = { date: lastCount.date, counted: lastCount.qty, boughtSince: since, days, rate, estimate: est, daysLeft: est !== null && rate > 0 ? est / rate : null };
+  }
+  return { counts, intervals, stock };
+}
+
+// كيلو في وحدة البند (طن = 1000) أو null لو الوحدة غير معروفة.
+export const kgPerUnit = (unit) => KG_PER_UNIT[(unit || '').trim()] ?? null;
 
 export function computeCycle(state, cycleId, today = todayISO()) {
   const cycle = entity(state, 'poultry.cycle', cycleId);
@@ -129,7 +175,7 @@ export function computeCycle(state, cycleId, today = todayISO()) {
   if (cycle.managerId) person(people, cycle.managerId);
 
   const cash = { in: 0, out: 0, sales: 0, expenses: 0 };
-  const counts = { birds: [], cash: [] };
+  const counts = { birds: [], cash: [], feed: [] };
   let grossExpenses = 0;
 
   for (const e of entries) {
@@ -145,12 +191,16 @@ export function computeCycle(state, cycleId, today = todayISO()) {
           r.guestCost += gp;
           r.guestBy[g.personId] = (r.guestBy[g.personId] || 0) + gp;
         }
-        const c = (r.byCategory[e.category] ||= { amount: 0, gross: 0, qty: 0, qtyGross: 0 });
+        const c = (r.byCategory[e.category] ||= blankCat());
         c.amount += ours;
         c.gross += e.amount;
+        c.entries++;
         if (e.qty) {
           c.qty += e.qty;
           c.qtyGross += e.amount; // متوسط سعر الوحدة يُحسب من القيود ذات الكمية فقط
+        } else {
+          c.noQty++; // قيد بلا كمية: يدخل المبلغ ولا يدخل مجموع الكميات ولا متوسط السعر
+          c.noQtyAmount += e.amount;
         }
         r.expensesOurs += ours;
         if (e.capital || isPre(e.month)) r.capExpenses += ours;
@@ -218,6 +268,35 @@ export function computeCycle(state, cycleId, today = todayISO()) {
   if (cycle.startDate && ymOf(cycle.startDate) < first) first = ymOf(cycle.startDate);
   if (cycle.status === 'active' && cycle.settleFrom && ymOf(today) > last) last = ymOf(today);
   const monthList = monthsRange(first, last).map((m) => M(m));
+
+  // عدد الطيور في تاريخ: آخر جرد قبله (أو العدد عند الشراء) − النافق − المباع حتى التاريخ.
+  const birdsAt = (date) => {
+    let base = null;
+    for (const c of counts.birds) if (c.date <= date) base = c;
+    let n = base ? base.qty : (cycle.birds || 0) * QTY;
+    for (const e of entries) {
+      if (e.date > date) break;
+      if (base && e.date <= base.date) continue;
+      if (e.kind === 'poultry.log') n -= (e.deaths || 0) * QTY;
+      else if (e.kind === 'poultry.sale' && e.product === 'birds') n -= e.qty || 0;
+    }
+    return Math.max(0, Math.round(n / QTY));
+  };
+  const endDate = cycle.endDate || today;
+  const feed = feedUsage(entries, counts.feed, today);
+  for (const r of monthList) {
+    const from = `${r.month}-01`;
+    const to = lastDayOf(r.month);
+    r.days = overlapDays(from, to, cycle.startDate || from, endDate) || daysInMonth(r.month);
+    r.birdsStart = birdsAt(addDays(from, -1));
+    r.birdsEnd = birdsAt(to < endDate ? to : endDate);
+    for (const iv of feed.intervals) {
+      const d = overlapDays(from, to, addDays(iv.from, 1), iv.to);
+      if (!d) continue;
+      r.feedMeasured += (iv.used * d) / iv.days;
+      r.feedMeasuredDays += d;
+    }
+  }
 
   const totals = { sales: 0, opRevenue: 0, opExpenses: 0, opNet: 0, capExpenses: 0, capRevenue: 0, capNet: 0, guestCost: 0, grossExpenses, net: 0 };
   let unallocated = 0;
@@ -324,6 +403,8 @@ export function computeCycle(state, cycleId, today = todayISO()) {
     cash: { ...cash, pool },
     cashChecks,
     birds: birdsTimeline(),
+    birdsAt,
+    feed,
     unallocated,
     days,
     ageDays: (cycle.ageDays || 0) + days,
@@ -345,7 +426,7 @@ export function aggregateMonths(rows) {
   out.closedInfo = rows.find((r) => r.closedInfo)?.closedInfo || null;
   const alloc = new Map();
   for (const r of rows) {
-    for (const k of ['sales', 'expensesOurs', 'capExpenses', 'opExpenses', 'guestCost', 'opRevenue', 'capRevenue', 'opNet', 'capNet', 'deaths', 'producedTrays', 'count']) out[k] += r[k];
+    for (const k of ['sales', 'expensesOurs', 'capExpenses', 'opExpenses', 'guestCost', 'opRevenue', 'capRevenue', 'opNet', 'capNet', 'deaths', 'producedTrays', 'count', 'days', 'feedMeasured', 'feedMeasuredDays']) out[k] += r[k];
     out.eggs.qty += r.eggs.qty;
     out.eggs.amount += r.eggs.amount;
     for (const [g, v] of Object.entries(r.eggs.byGrade)) {
@@ -355,7 +436,7 @@ export function aggregateMonths(rows) {
     }
     for (const p of ['manure', 'bags', 'birds', 'other']) for (const [k, v] of Object.entries(r[p])) out[p][k] = (out[p][k] || 0) + v;
     for (const [c, v] of Object.entries(r.byCategory)) {
-      const t = (out.byCategory[c] ||= { amount: 0, gross: 0, qty: 0, qtyGross: 0 });
+      const t = (out.byCategory[c] ||= blankCat());
       for (const k of Object.keys(t)) t[k] += v[k] || 0;
     }
     for (const [pid, v] of Object.entries(r.guestBy)) out.guestBy[pid] = (out.guestBy[pid] || 0) + v;
@@ -368,25 +449,49 @@ export function aggregateMonths(rows) {
     }
   }
   out.alloc = [...alloc.values()];
+  out.birdsStart = rows[0]?.birdsStart || 0;
+  out.birdsEnd = rows[rows.length - 1]?.birdsEnd || 0;
   return out;
 }
 
 // مؤشرات شهر واحد.
-export function monthKpis(r) {
+// kg: كيلو في وحدة العلف (طن = 1000)، أو null لو الوحدة غير معروفة (فتُعرض المعدلات بوحدة البند).
+export function monthKpis(r, { kg = 1000 } = {}) {
   const trays = r.eggs.qty; // ×1000
-  const feed = r.byCategory.feed || { amount: 0, gross: 0, qty: 0, qtyGross: 0 };
+  const feed = r.byCategory.feed || blankCat();
+  const days = r.days || (r.month ? daysInMonth(r.month) : 0);
+  const birds = avgBirds(r);
+  // الاستهلاك اليومي: من الجرد لو يغطي الفترة، وإلا من المشتريات ÷ الأيام (تقريبي).
+  const measured = r.feedMeasuredDays > 0;
+  const feedPerDay = measured ? r.feedMeasured / r.feedMeasuredDays / QTY : feed.qty && days ? feed.qty / QTY / days : null; // بوحدة البند/يوم
+  const produced = r.producedTrays || trays; // الإنتاج المسجل، وإلا المباع
   return {
     trays,
     eggAvg: trays ? mulDiv(r.eggs.amount, QTY, trays) : null, // متوسط سعر الطبق (قرش)
     costPerTray: trays ? mulDiv(r.pre ? r.expensesOurs : r.opExpenses, QTY, trays) : null, // تكلفة الطبق = سعر التعادل
-    feedQty: feed.qty, // طن ×1000 (= كيلو)
+    feedQty: feed.qty, // بوحدة البند ×1000 (الطن ×1000 = كيلو)
     feedAmount: feed.gross,
     feedAvg: feed.qty ? mulDiv(feed.qtyGross, QTY, feed.qty) : null, // متوسط سعر الطن
-    feedPerTray: trays && feed.qty ? feed.qty / (trays / QTY) : null, // كيلو علف لكل طبق (الطن ×1000 = كيلو)
-    trayPerDay: trays ? trays / QTY / daysInMonth(r.month) : null,
+    feedNoQty: feed.noQty, // مشتريات علف بلا كمية (لا تدخل الكميات)
+    feedPerTray: trays && feed.qty && kg ? (feed.qty / QTY) * kg / (trays / QTY) : null, // كيلو علف لكل طبق مباع
+    feedPerDay, // بوحدة البند/يوم
+    feedMeasured: measured,
+    feedMeasuredDays: Math.min(days, r.feedMeasuredDays || 0), // أيام الفترة اللي يغطيها الجرد
+    feedKgPerDay: feedPerDay !== null && kg ? feedPerDay * kg : null,
+    feedGramsPerBird: feedPerDay !== null && kg && birds ? (feedPerDay * kg * 1000) / birds : null,
+    birds,
+    days,
+    trayPerDay: trays && days ? trays / QTY / days : null,
+    producedPerDay: produced && days ? produced / QTY / days : null,
+    producedFromLog: !!r.producedTrays,
+    layRate: produced && days && birds ? ((produced / QTY / days) * EGGS_PER_TRAY) / birds : null, // نسبة الإنتاج (بيضة/طائر/يوم)
+    deaths: r.deaths,
+    mortality: r.birdsStart ? r.deaths / r.birdsStart : null,
     margin: r.opRevenue ? r.opNet / r.opRevenue : null,
   };
 }
+
+const avgBirds = (r) => (r.birdsStart || r.birdsEnd ? (r.birdsStart + r.birdsEnd) / 2 : 0);
 
 function cycleKpis(months, totals, days) {
   const settled = months.filter((r) => r.phase === 'regular' && r.count);
@@ -423,11 +528,11 @@ function cycleKpis(months, totals, days) {
 }
 
 // مؤشرات فترة يختارها المستخدم (من/إلى شهر الحساب).
-export function periodStats(data, from, to) {
+export function periodStats(data, from, to, { kg = 1000 } = {}) {
   const rows = data.months.filter((r) => r.month >= from && r.month <= to && r.count);
-  const out = { months: rows.length, days: 0, trays: 0, eggs: 0, sales: 0, opRevenue: 0, opExpenses: 0, opNet: 0, capNet: 0, feedQty: 0, feedQtyAmount: 0, feedAmount: 0, deaths: 0, byCategory: {}, byGrade: {} };
+  const out = { months: rows.length, days: 0, trays: 0, eggs: 0, sales: 0, opRevenue: 0, opExpenses: 0, opNet: 0, capNet: 0, feedQty: 0, feedQtyAmount: 0, feedAmount: 0, deaths: 0, byCategory: {}, catDetail: {}, byGrade: {} };
   for (const r of rows) {
-    out.days += daysInMonth(r.month);
+    out.days += r.days || daysInMonth(r.month);
     out.trays += r.eggs.qty;
     out.eggs += r.eggs.amount;
     out.sales += r.sales;
@@ -442,7 +547,11 @@ export function periodStats(data, from, to) {
       out.feedQtyAmount += f.qtyGross;
       out.feedAmount += f.gross;
     }
-    for (const [k, v] of Object.entries(r.byCategory)) out.byCategory[k] = (out.byCategory[k] || 0) + v.amount;
+    for (const [k, v] of Object.entries(r.byCategory)) {
+      out.byCategory[k] = (out.byCategory[k] || 0) + v.amount;
+      const t = (out.catDetail[k] ||= blankCat());
+      for (const f of Object.keys(t)) t[f] += v[f] || 0;
+    }
     for (const [k, v] of Object.entries(r.eggs.byGrade)) {
       const g = (out.byGrade[k] ||= { qty: 0, amount: 0 });
       g.qty += v.qty;
@@ -457,7 +566,64 @@ export function periodStats(data, from, to) {
   out.avgMonthlyNet = rows.length ? Math.round(out.opNet / rows.length) : null;
   out.avgMonthlyFeed = rows.length ? Math.round(out.feedQty / rows.length) : null;
   out.avgMonthlyTrays = rows.length ? Math.round(out.trays / rows.length) : null;
+  out.agg = rows.length ? aggregateMonths(rows) : null;
+  out.k = out.agg ? monthKpis(out.agg, { kg }) : null; // العلف اليومي، الطيور، الإنتاج، النافق للفترة كلها
   return out;
+}
+
+// بند مصروف شهراً بشهر: الكمية، متوسط سعر الوحدة (من القيود ذات الكمية)، المبلغ، والقيود بلا كمية.
+export function categoryMonths(data, category, from, to) {
+  const rows = [];
+  const total = { ...blankCat(), avg: null };
+  for (const r of data.months) {
+    if (r.month < from || r.month > to) continue;
+    const c = r.byCategory[category];
+    if (!c || !c.entries) continue;
+    rows.push({ month: r.month, pre: r.pre, lay: r.lay, ...c, avg: c.qty ? mulDiv(c.qtyGross, QTY, c.qty) : null });
+    for (const k of Object.keys(blankCat())) total[k] += c[k];
+  }
+  total.avg = total.qty ? mulDiv(total.qtyGross, QTY, total.qty) : null;
+  return { rows, total };
+}
+
+// تاريخ قبل date بعدد شهور (اليوم محصور في أيام الشهر).
+function monthsBefore(date, n) {
+  const ym = addMonths(ymOf(date), -n);
+  const day = Math.min(Number(date.slice(8, 10)), daysInMonth(ym));
+  return `${ym}-${String(day).padStart(2, '0')}`;
+}
+
+// سعر وحدة بند (العلف أساساً) حول تاريخ: المتوسط المرجّح لمشتريات آخر «months» شهور حتى التاريخ (كل الدورات)،
+// وآخر سعر قبله. القيود بلا كمية لا تدخل. excludeId: قيد يُعدَّل الآن فلا يُقارن بنفسه.
+export function unitPriceStats(state, category, date, { months = PRICE_CHECK.months, excludeId = null } = {}) {
+  const from = monthsBefore(date, months);
+  let qty = 0;
+  let amount = 0;
+  let count = 0;
+  let last = null;
+  for (const e of activeEntries(state, (x) => x.kind === 'poultry.expense' && x.category === category && x.qty > 0 && x.id !== excludeId && x.date <= date)) {
+    if (e.date >= from) {
+      qty += e.qty;
+      amount += e.amount;
+      count++;
+    }
+    if (!last || cmp(e.date, last.date) > 0 || (e.date === last.date && cmp(e.ts, last.ts) > 0)) last = e;
+  }
+  return {
+    from,
+    months,
+    count,
+    qty,
+    avg: qty ? mulDiv(amount, QTY, qty) : null,
+    last: last ? { date: last.date, price: mulDiv(last.amount, QTY, last.qty), cycleId: last.cycleId } : null,
+  };
+}
+
+// مقارنة سعر بمرجع: الفرق كنسبة، و«warn» لو تعدى الحد.
+export function priceCheck(price, ref, warnPct = PRICE_CHECK.warnPct) {
+  if (!price || !ref) return null;
+  const diff = (price - ref) / ref;
+  return { diff, warn: Math.abs(diff) * 100 > warnPct };
 }
 
 // كشف حساب شخص في دورة: الدفعات + نصيبه الشهري، برصيد تراكمي.

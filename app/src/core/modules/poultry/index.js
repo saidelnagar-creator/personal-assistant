@@ -1,9 +1,9 @@
 // وحدة الدواجن (دورات إنتاج البيض): الكيانات، أنواع القيود، التحقق، الوصف، التذكيرات، المساهمة في الوضع المالي.
 import { entity, isClosed, listEntities, closedMonths } from '../../engine.js';
 import { isShare, sumShares, isWhole } from '../../shares.js';
-import { QTY, lineAmount } from '../../money.js';
+import { QTY, lineAmount, mulDiv } from '../../money.js';
 import { addMonths, check, isDate, isMonth, nonEmpty, ymOf } from '../../util.js';
-import { BREEDS, CYCLE_STATUS, EGG_GRADES, EXPENSE_CATEGORIES, PRODUCTS } from './config.js';
+import { BREEDS, COUNT_ITEMS, CYCLE_STATUS, EGG_GRADES, EXPENSE_CATEGORIES, PRODUCTS } from './config.js';
 import { cycleData, scopeOf } from './calc.js';
 import { ME } from '../common.js';
 
@@ -100,8 +100,11 @@ export default {
         if (e.qty && e.price) check(lineAmount(e.qty, e.price) === e.amount, 'المبلغ لا يساوي الكمية × السعر');
       },
       describe: (s, e) => {
-        const cat = entity(s, 'poultry.category', e.category)?.name || 'مصروف';
-        const q = e.qty ? ` · ${e.qty / QTY} ${entity(s, 'poultry.category', e.category)?.unit || ''}` : '';
+        const c = entity(s, 'poultry.category', e.category);
+        const cat = c?.name || 'مصروف';
+        // سعر الوحدة: المكتوب، أو المشتق من الإجمالي ÷ الكمية لو أُدخلت الكمية والإجمالي فقط.
+        const unitPrice = e.price || (e.qty ? mulDiv(e.amount, QTY, e.qty) : 0);
+        const q = e.qty ? ` · ${[e.qty / QTY, c?.unit].filter(Boolean).join(' ')}${unitPrice ? ` × ${money(unitPrice)}` : ''}` : '';
         return { title: `${cat}${q}`, amount: e.amount, sign: -1, tag: 'expense' };
       },
     },
@@ -207,11 +210,16 @@ export default {
       label: 'جرد',
       validate: (s, e) => {
         cycleOf(s, e);
-        check(['birds', 'cash'].includes(e.item), 'نوع الجرد غير صالح');
+        check(COUNT_ITEMS.includes(e.item), 'نوع الجرد غير صالح');
         if (e.item === 'birds') check(nonNegInt(e.qty), 'العدد غير صالح');
+        else if (e.item === 'feed') check(nonNegInt(e.qty), 'كمية العلف غير صالحة');
         else check(Number.isSafeInteger(e.amount), 'المبلغ غير صالح');
       },
-      describe: (s, e) => ({ title: e.item === 'birds' ? `جرد الطيور: ${e.qty / QTY} طائر` : `جرد النقدية مع المدير: ${money(e.amount)}`, amount: 0, sign: 0, tag: 'count' }),
+      describe: (s, e) => {
+        const feedUnit = entity(s, 'poultry.category', 'feed')?.unit || '';
+        const title = e.item === 'birds' ? `جرد الطيور: ${e.qty / QTY} طائر` : e.item === 'feed' ? `جرد العلف: ${[e.qty / QTY, feedUnit].filter(Boolean).join(' ')} في المخزن` : `جرد النقدية مع المدير: ${money(e.amount)}`;
+        return { title, amount: 0, sign: 0, tag: 'count' };
+      },
     },
   },
   seeds: () => [...EXPENSE_CATEGORIES.map((c) => ['poultry.category', c]), ...EGG_GRADES.map((g) => ['poultry.grade', g])],

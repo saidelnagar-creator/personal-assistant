@@ -1,5 +1,5 @@
 // ملف مولَّد — لا تعدّله يدوياً. التوليد: npm run sw:assets
-self.__ASSETS_VERSION = '4c091d51f0e8';
+self.__ASSETS_VERSION = '1d2a296dff85';
 self.__ASSETS = [
  "./",
  "./css/app.css",
